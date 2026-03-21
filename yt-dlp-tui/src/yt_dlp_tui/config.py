@@ -1,37 +1,52 @@
 from __future__ import annotations
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Literal, Any
+from typing import Any
 import tomllib
 import platformdirs
 import toml
+import shutil
 
 CONFIG_DIR = Path(platformdirs.user_config_dir("yt-dlp-tui"))
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
+BROWSERS = ["firefox", "chrome", "chromium", "edge", "opera", "brave", "vivaldi", "safari"]
+QUALITIES = ["best", "1080p", "720p", "480p", "360p", "audio"]
+CONTAINERS = ["best", "mkv", "mp4", "webm"]
+AUDIO_FORMATS = ["mp3", "flac", "m4a", "wav", "opus"]
+
+QUALITY_FORMAT_MAP = {
+    "best": "bv*+ba/b",
+    "1080p": "bv*[height<=1080]+ba/b[height<=1080]",
+    "720p": "bv*[height<=720]+ba/b[height<=720]",
+    "480p": "bv*[height<=480]+ba/b[height<=480]",
+    "360p": "bv*[height<=360]+ba/b[height<=360]",
+    "audio": "ba/b",
+}
+
 
 @dataclass
 class CookieSettings:
-    mode: Literal["none", "browser", "file"] = "none"
-    browser: Literal["firefox", "chrome", "chromium", "edge", "opera", "brave", "vivaldi", "safari"] = "firefox"
+    mode: str = "none"
+    browser: str = "firefox"
     file_path: str = ""
 
 
 @dataclass
 class FormatSettings:
-    quality: Literal["best", "1080p", "720p", "480p", "360p", "audio"] = "best"
-    container: Literal["mkv", "mp4", "webm", "best"] = "best"
+    quality: str = "best"
+    container: str = "mp4"
     codec: str = ""
 
 
 @dataclass
 class DownloadSettings:
-    output_template: str = "%(title)s.%(ext)s"
+    output_template: str = "%(title)s [%(id)s].%(ext)s"
     output_dir: str = str(Path.home() / "Downloads")
-    embed_thumbnail: bool = True
-    embed_metadata: bool = True
+    embed_thumbnail: bool = False
+    embed_metadata: bool = False
     extract_audio: bool = False
-    audio_format: Literal["mp3", "flac", "m4a", "wav", "opus"] = "mp3"
+    audio_format: str = "mp3"
 
 
 @dataclass
@@ -54,62 +69,66 @@ class Config:
         }
 
     @classmethod
-    def load(cls) -> "Config":
+    def load(cls) -> Config:
         if not CONFIG_FILE.exists():
             return cls()
-        
+
         with open(CONFIG_FILE, "rb") as f:
             data = tomllib.load(f)
-        
+
         return cls(
             cookie=CookieSettings(**data.get("cookie", {})),
             format=FormatSettings(**data.get("format", {})),
             download=DownloadSettings(**data.get("download", {})),
         )
 
-    def get_yt_dlp_options(self, url: str) -> dict[str, Any]:
-        opts: dict[str, Any] = {"default_search": "ytsearch", "outtmpl": self._get_output_template()}
-        
-        opts["format"] = self._build_format_string()
-        
-        if self.cookie.mode == "browser":
-            opts["cookiesfrombrowser"] = (self.cookie.browser,)  # type: ignore[assignment]
-        elif self.cookie.mode == "file" and self.cookie.file_path:
-            opts["cookiefile"] = self.cookie.file_path
-        
-        if self.download.embed_thumbnail:
-            opts["embedthumbnail"] = True  # type: ignore[assignment]
-        if self.download.embed_metadata:
-            opts["addmetadata"] = True  # type: ignore[assignment]
-        if self.download.extract_audio:
-            opts["postprocessors"] = [{  # type: ignore[assignment]
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": self.download.audio_format,
-            }]
-        
-        return opts
+    def build_cli_args(self, url: str) -> list[str]:
+        """Build the yt-dlp CLI argument list from config."""
+        yt_dlp_bin = shutil.which("yt-dlp") or "yt-dlp"
+        args: list[str] = [yt_dlp_bin]
 
-    def _build_format_string(self) -> str:
-        quality_map = {
-            "best": "bestvideo+bestaudio/best",
-            "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-            "720p": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-            "480p": "bestvideo[height<=480]+bestaudio/best[height<=480]",
-            "360p": "bestvideo[height<=360]+bestaudio/best[height<=360]",
-            "audio": "bestaudio/best",
-        }
-        
-        fmt = quality_map.get(self.format.quality, "bestvideo+bestaudio/best")
-        
+        # Format
+        fmt = self._build_format_string()
+        args.extend(["-f", fmt])
+
+        # Container merge
         if self.format.container != "best":
-            fmt += f"[ext={self.format.container}]"
-        
-        if self.format.codec:
-            fmt += f"[vcodec={self.format.codec}]"
-        
-        return fmt
+            args.extend(["--merge-output-format", self.format.container])
 
-    def _get_output_template(self) -> str:
+        # Cookies
+        if self.cookie.mode == "browser":
+            args.extend(["--cookies-from-browser", self.cookie.browser])
+        elif self.cookie.mode == "file" and self.cookie.file_path:
+            args.extend(["--cookies", self.cookie.file_path])
+
+        # Output
         output_dir = Path(self.download.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        return str(output_dir / self.download.output_template)
+        outtmpl = str(output_dir / self.download.output_template)
+        args.extend(["-o", outtmpl])
+
+        # Post-processing
+        if self.download.embed_thumbnail:
+            args.append("--embed-thumbnail")
+        if self.download.embed_metadata:
+            args.append("--embed-metadata")
+        if self.download.extract_audio:
+            args.extend(["-x", "--audio-format", self.download.audio_format])
+
+        # Progress: use newline mode so each update is a separate line
+        args.append("--newline")
+
+        args.append(url)
+        return args
+
+    def _build_format_string(self) -> str:
+        fmt = QUALITY_FORMAT_MAP.get(self.format.quality, "bv*+ba/b")
+
+        # Prefer specific container extensions when not "best"
+        if self.format.container == "mp4":
+            fmt = fmt.replace("bv*", "bv*[ext=mp4]").replace("ba", "ba[ext=m4a]")
+        elif self.format.container in ("mkv", "webm"):
+            ext = self.format.container
+            fmt = fmt.replace("bv*", f"bv*[ext={ext}]").replace("ba", f"ba[ext={ext}]")
+
+        return fmt

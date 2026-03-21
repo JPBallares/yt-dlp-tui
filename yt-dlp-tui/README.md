@@ -2,13 +2,16 @@
 
 A terminal user interface (TUI) wrapper for [yt-dlp](https://github.com/yt-dlp/yt-dlp) with saved configurations for format, quality, and cookies.
 
+Built with [Textual](https://github.com/Textualize/textual). Downloads run as a subprocess so yt-dlp's JS challenge solver (JavaScriptCore on macOS) works without issues.
+
 ## Features
 
-- **Configurable Quality Presets**: best, 1080p, 720p, 480p, 360p, or audio-only
-- **Container Format Selection**: mkv, mp4, webm, or best available
-- **Cookie Management**: Use cookies from browser (Firefox recommended) or a cookie.txt file
-- **Download Options**: Embed thumbnails, metadata, and audio extraction
-- **Persistent Config**: Settings saved to `~/.config/yt-dlp-tui/config.toml`
+- **Configurable Quality Presets** -- best, 1080p, 720p, 480p, 360p, or audio-only
+- **Container Format Selection** -- mp4 (default), mkv, webm, or best available
+- **Cookie Management** -- use cookies from a browser or a `cookies.txt` file
+- **Download Options** -- embed thumbnails, metadata, and audio extraction
+- **Live Progress** -- real-time yt-dlp output streamed into the TUI
+- **Persistent Config** -- settings saved to a TOML file across sessions
 
 ## Project Structure
 
@@ -18,21 +21,31 @@ yt-dlp-tui/
 └── src/
     └── yt_dlp_tui/
         ├── __init__.py         # Package exports
-        ├── config.py           # Config dataclasses and persistence
-        └── main.py             # Textual TUI application
+        ├── config.py           # Config dataclasses, persistence, CLI arg builder
+        └── main.py             # Textual TUI (MainScreen, ConfigScreen)
 ```
+
+### Key modules
+
+- **`config.py`** -- `Config` dataclass with `save()`, `load()`, and `build_cli_args(url)` which converts saved settings into a `yt-dlp` CLI command.
+- **`main.py`** -- Textual app with two screens:
+  - `MainScreen` -- URL input, download button, live status/log output
+  - `ConfigScreen` -- radio sets and switches for all settings
 
 ## Local Setup
 
 ### Prerequisites
 
 - Python 3.11+
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) installed and on `PATH`
+- [ffmpeg](https://ffmpeg.org/) (required by yt-dlp for merging formats)
 - [uv](https://github.com/astral-sh/uv) (recommended) or pip
 
 ### Installation
 
+`pyproject.toml` is the standard Python packaging metadata file. Both `uv pip` and `pip` read it to resolve dependencies.
+
 ```bash
-# Clone or navigate to the project directory
 cd yt-dlp-tui
 
 # Install with uv (recommended)
@@ -42,6 +55,8 @@ uv pip install -e .
 pip install -e .
 ```
 
+The `-e` flag installs in **editable mode** -- changes to source code take effect immediately without reinstalling.
+
 ## Usage
 
 ### Running the App
@@ -50,84 +65,115 @@ pip install -e .
 yt-dlp-tui
 ```
 
-### Controls
+### Keyboard Controls
 
-| Key | Action |
-|-----|--------|
-| `q` | Quit application |
-| `c` | Open Config screen |
-| `d` | Open Download screen |
+| Key      | Action                  |
+|----------|-------------------------|
+| `q`      | Quit application        |
+| `c`      | Open Config screen      |
 | `Escape` | Back to previous screen |
+
+All hotkeys work even when an input field is focused.
 
 ### Main Screen
 
 1. Enter a YouTube URL in the input field
-2. Click **Start Download** or press the button
-3. View progress in the progress bar
+2. Click **Start Download**
+3. Watch live yt-dlp output stream in the log area:
+   ```
+   [youtube] Extracting URL: ...
+   [youtube] [jsc:apple-webkit-jsi] Solving JS challenges...
+   [download]  31.9% of 6.26MiB at 11.45MiB/s ETA 00:00
+   Done!
+   ```
 
 ### Config Screen
 
+Press `c` or click the **Config** button to open settings.
+
 #### Cookie Settings
 
-- **No Cookies**: Download public videos without authentication
-- **From Browser**: Extract cookies from your browser (Firefox recommended)
-  - Note: Chrome/Edge have encrypted cookie databases and may not work reliably
-- **From File**: Use a Netscape-format cookie file (e.g., from browser extension)
+| Option          | Description                                                  |
+|-----------------|--------------------------------------------------------------|
+| **No Cookies**  | Download public videos without authentication                |
+| **From Browser**| Extract cookies from a browser (`--cookies-from-browser`)    |
+| **From File**   | Use a Netscape-format `cookies.txt` (`--cookies`)            |
 
 #### Format Settings
 
-- **Quality**: Select resolution limit or audio-only
-- **Container**: Choose video format (mp4, mkv, webm)
+| Option        | Description                                    |
+|---------------|------------------------------------------------|
+| **Quality**   | Resolution cap: best, 1080p, 720p, 480p, 360p, audio-only |
+| **Container** | Output format: mp4 (default), mkv, webm, best |
+
+When container is set to `mp4`, the format string becomes `bv*[ext=mp4]+ba[ext=m4a]/b` with `--merge-output-format mp4`, matching the recommended yt-dlp usage for YouTube.
 
 #### Download Settings
 
-- **Output Directory**: Where to save downloads (default: `~/Downloads`)
-- **Filename Template**: yt-dlp format string (default: `%(title)s.%(ext)s`)
-- **Embed Thumbnail**: Add video thumbnail as cover art
-- **Embed Metadata**: Add video metadata (title, uploader, etc.)
-- **Extract Audio Only**: Convert to audio with selected format
+| Option             | Default                        | Description                          |
+|--------------------|--------------------------------|--------------------------------------|
+| **Output Dir**     | `~/Downloads`                  | Where to save files                  |
+| **Filename**       | `%(title)s [%(id)s].%(ext)s`   | yt-dlp output template               |
+| **Embed Thumbnail**| off                            | `--embed-thumbnail`                  |
+| **Embed Metadata** | off                            | `--embed-metadata`                   |
+| **Extract Audio**  | off                            | `-x --audio-format <format>`         |
+| **Audio Format**   | mp3                            | mp3, flac, m4a, wav, opus            |
 
-### Cookie Recommendation
+### Cookie Tips
 
 For age-restricted or private videos:
 
-1. Use **Firefox** (recommended for cookie extraction)
-2. Log into YouTube in Firefox
-3. In the TUI, select **From Browser** → **Firefox**
-4. Cookies expire ~2 weeks; refresh by logging in again
+- **From File** (recommended): Export cookies from your browser using an extension, save as `cookies.txt`, and point the config to that file
+- **From Browser**: Select your browser in the config. Firefox works most reliably; Chrome/Edge have encrypted cookie databases that may fail
+- Cookies expire after ~2 weeks; re-export when downloads start failing
 
 ## Configuration File
 
-Settings are stored at:
+Settings persist at (via [platformdirs](https://github.com/platformdirs/platformdirs)):
 
-- **Linux/macOS**: `~/.config/yt-dlp-tui/config.toml`
-- **Windows**: `%APPDATA%\yt-dlp-tui\config.toml`
+| Platform  | Path                                               |
+|-----------|----------------------------------------------------|
+| **macOS** | `~/Library/Application Support/yt-dlp-tui/config.toml` |
+| **Linux** | `~/.config/yt-dlp-tui/config.toml`                |
+| **Windows** | `%APPDATA%\yt-dlp-tui\config.toml`              |
 
 Example:
 
 ```toml
 [cookie]
-mode = "browser"
+mode = "file"
 browser = "firefox"
-file_path = ""
+file_path = "/path/to/www.youtube.com_cookies.txt"
 
 [format]
 quality = "best"
-container = "best"
+container = "mp4"
 codec = ""
 
 [download]
-output_template = "%(title)s.%(ext)s"
+output_template = "%(title)s [%(id)s].%(ext)s"
 output_dir = "~/Downloads"
-embed_thumbnail = true
-embed_metadata = true
+embed_thumbnail = false
+embed_metadata = false
 extract_audio = false
 audio_format = "mp3"
 ```
 
+## How It Works
+
+The TUI does **not** use yt-dlp's Python API. Instead it:
+
+1. Builds a CLI argument list from the saved config (`Config.build_cli_args()`)
+2. Spawns `yt-dlp` as a subprocess with `--newline` for line-by-line progress
+3. Streams stdout/stderr into the TUI in real time via a background thread
+
+This approach is necessary because yt-dlp's JavaScript challenge solver uses Apple's JavaScriptCore on macOS, which requires the main thread. Since Textual owns the main thread, running yt-dlp in-process would hang.
+
 ## Dependencies
 
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) - Video downloader
-- [Textual](https://github.com/Textualize/textual) - TUI framework
-- [platformdirs](https://github.com/platformdirs/platformdirs) - Config directory
-- [toml](https://github.com/uiri/toml) - Config file parsing
+| Package | Purpose |
+|---------|---------|
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Video downloader (CLI) |
+| [Textual](https://github.com/Textualize/textual) | TUI framework |
+| [platformdirs](https://github.com/platformdirs/platformdirs) | Cross-platform config directory |
+| [toml](https://github.com/uiri/toml) | Config file writing |
