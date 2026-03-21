@@ -1,0 +1,24 @@
+brotli==1.2.0
+certifi==2026.2.25
+charset-normalizer==3.4.6
+idna==3.11
+linkify-it-py==2.1.0
+markdown-it-py==4.0.0
+mdit-py-plugins==0.5.0
+mdurl==0.1.2
+mutagen==1.47.0
+platformdirs==4.9.4
+pycryptodomex==3.23.0
+pygments==2.19.2
+requests==2.32.5
+rich==14.3.3
+textual==8.1.1
+toml==0.10.2
+typing-extensions==4.15.0
+uc-micro-py==2.0.0
+urllib3==2.6.3
+websockets==16.0
+yt-dlp @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz
+yt-dlp-apple-webkit-jsi==0.1.1
+yt-dlp-ejs==0.8.0
+-e file:///Volumes/WD_BLACK_DEV/users/jpballares/ytdownloads/yt-dlp-tui
