@@ -13,6 +13,7 @@ CONFIG_FILE = CONFIG_DIR / "config.toml"
 BROWSERS = ["firefox", "chrome", "chromium", "edge", "opera", "brave", "vivaldi", "safari"]
 QUALITIES = ["best", "1080p", "720p", "480p", "360p", "audio"]
 CONTAINERS = ["best", "mkv", "mp4", "webm"]
+CODECS = ["h264", "h265", "vp9", "none"]
 AUDIO_FORMATS = ["mp3", "flac", "m4a", "wav", "opus"]
 
 QUALITY_FORMAT_MAP = {
@@ -36,7 +37,7 @@ class CookieSettings:
 class FormatSettings:
     quality: str = "best"
     container: str = "mp4"
-    codec: str = ""
+    codec: str = "h264"
 
 
 @dataclass
