@@ -53,7 +53,7 @@ def _select_key(rs: RadioSet, prefix: str, key: str) -> None:
 
 class MainScreen(Screen):
     BINDINGS = [
-        Binding("q", "quit", "Quit", priority=True),
+        Binding("q", "app.quit", "Quit", priority=True),
         Binding("c", "show_config", "Config", priority=True),
     ]
 
@@ -68,6 +68,7 @@ class MainScreen(Screen):
             with VerticalScroll(id="sidebar"):
                 yield Label("yt-dlp TUI", classes="title")
                 yield Button("Config", id="btn-config")
+                yield Static("", id="config-summary", classes="config-summary")
             with VerticalScroll(id="main-content"):
                 yield Label("Enter URL:")
                 yield Input(
@@ -77,6 +78,22 @@ class MainScreen(Screen):
                 yield Static("", id="status-line")
                 yield Static("", id="output-log")
         yield Footer()
+
+    def update_config_summary(self) -> None:
+        summary = self.query_one("#config-summary", Static)
+        text = f"Quality: {self.config.format.quality}\n"
+        text += f"Container: {self.config.format.container}\n"
+        text += f"Codec: {self.config.format.codec}\n"
+        if self.config.download.extract_audio:
+            text += f"Audio: {self.config.download.audio_format}\n"
+        text += f"Dir: {self.config.download.output_dir}"
+        summary.update(text)
+
+    def on_mount(self) -> None:
+        self.update_config_summary()
+
+    def on_screen_resume(self) -> None:
+        self.update_config_summary()
 
     def action_show_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.config))
@@ -189,16 +206,36 @@ class MainScreen(Screen):
 
                         ffmpeg_cmd.extend(["-c:a", "aac", str(compatible_file)])
 
-                        subprocess.run(
+                        app.call_from_thread(status.update, f"Converting to {vcodec}...")
+                        ffmpeg_proc = subprocess.Popen(
                             ffmpeg_cmd,
-                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1,
                         )
+                        self._proc = ffmpeg_proc
 
-                        app.call_from_thread(
-                            status.update, f"Converted to compatible MP4 ({self.config.format.codec})"
-                        )
-                    except subprocess.CalledProcessError:
-                        app.call_from_thread(status.update, "FFmpeg conversion failed!")
+                        assert ffmpeg_proc.stdout is not None
+                        for raw_line in ffmpeg_proc.stdout:
+                            line = raw_line.rstrip()
+                            if not line:
+                                continue
+                            app.call_from_thread(status.update, "Converting...")
+                            lines.append(line)
+                            tail = "\n".join(lines[-20:])
+                            app.call_from_thread(log.update, tail)
+
+                        ffmpeg_proc.wait()
+                        if ffmpeg_proc.returncode == 0:
+                            app.call_from_thread(
+                                status.update, f"Converted to compatible MP4 ({self.config.format.codec})"
+                            )
+                        else:
+                            app.call_from_thread(status.update, f"FFmpeg conversion failed (exit {ffmpeg_proc.returncode})!")
+                    except Exception as e:
+                        app.call_from_thread(status.update, "FFmpeg conversion exception!")
+                        app.call_from_thread(log.update, str(e))
                 else:
                     app.call_from_thread(
                         status.update, f"Failed (exit {proc.returncode})"
@@ -385,6 +422,7 @@ class YtDlpTUI(App):
     #config-scroll { padding: 1; }
     .title { text-style: bold; margin-bottom: 1; }
     .section-title { text-style: bold; margin-top: 2; margin-bottom: 1; }
+    .config-summary { margin-top: 2; border: solid $secondary; padding: 1; }
     .hidden { display: none; }
     .switch-row { height: 3; }
     RadioSet { margin-bottom: 1; }
