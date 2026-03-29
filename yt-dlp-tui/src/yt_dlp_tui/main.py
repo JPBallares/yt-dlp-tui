@@ -12,11 +12,12 @@ from textual.widgets import (
     Static,
     Switch,
 )
-from textual import on
+from textual import on, events
 from textual.screen import Screen
 
 import subprocess
 import threading
+import shlex
 from pathlib import Path
 
 from .config import Config, BROWSERS, QUALITIES, CONTAINERS, CODECS, AUDIO_FORMATS
@@ -54,6 +55,7 @@ def _select_key(rs: RadioSet, prefix: str, key: str) -> None:
 class MainScreen(Screen):
     BINDINGS = [
         Binding("q", "app.quit", "Quit", priority=True),
+        Binding("v", "show_convert", "Convert", priority=True),
         Binding("c", "show_config", "Config", priority=True),
     ]
 
@@ -67,6 +69,7 @@ class MainScreen(Screen):
         with Horizontal():
             with VerticalScroll(id="sidebar"):
                 yield Label("yt-dlp TUI", classes="title")
+                yield Button("Convert", id="btn-convert")
                 yield Button("Config", id="btn-config")
                 yield Static("", id="config-summary", classes="config-summary")
             with VerticalScroll(id="main-content"):
@@ -94,6 +97,13 @@ class MainScreen(Screen):
 
     def on_screen_resume(self) -> None:
         self.update_config_summary()
+
+    def action_show_convert(self) -> None:
+        self.app.push_screen(ConvertScreen(self.config))
+
+    @on(Button.Pressed, "#btn-convert")
+    def on_convert_pressed(self) -> None:
+        self.action_show_convert()
 
     def action_show_config(self) -> None:
         self.app.push_screen(ConfigScreen(self.config))
@@ -131,24 +141,11 @@ class MainScreen(Screen):
                 self._proc = proc
 
                 lines: list[str] = []
-                actual_filename: str | None = None
                 assert proc.stdout is not None
                 for raw_line in proc.stdout:
                     line = raw_line.rstrip()
                     if not line:
                         continue
-
-                    # Capture filename if possible
-                    if "[download] Destination: " in line:
-                        actual_filename = line.split("[download] Destination: ")[1]
-                    elif "[download] " in line and " has already been downloaded" in line:
-                        actual_filename = line.split("[download] ")[1].split(" has already been downloaded")[0]
-                    elif "[Merger] Merging formats into \"" in line:
-                        # Extract between quotes
-                        actual_filename = line.split("[Merger] Merging formats into \"")[1].split("\"")[0]
-                    elif "[VideoConvertor] Converting video from " in line and " to " in line:
-                        # Sometimes yt-dlp converts after download
-                        actual_filename = line.split(" to ")[1].strip()
 
                     # Show latest line as status
                     app.call_from_thread(status.update, line)
@@ -161,81 +158,157 @@ class MainScreen(Screen):
                 proc.wait()
                 if proc.returncode == 0:
                     app.call_from_thread(status.update, "Done!")
+                else:
+                    app.call_from_thread(
+                        status.update, f"Failed (exit {proc.returncode})"
+                    )
+            except Exception as e:
+                app.call_from_thread(status.update, "Failed!")
+                app.call_from_thread(log.update, str(e))
 
-                    if self.config.format.codec == "none":
-                        app.call_from_thread(status.update, "Done! (No conversion requested)")
-                        return
+        t = threading.Thread(target=_stream, daemon=True)
+        t.start()
 
-                    if not actual_filename:
-                        app.call_from_thread(status.update, "Could not determine filename for conversion")
-                        return
 
-                    downloaded_file = Path(actual_filename)
-                    if not downloaded_file.exists():
-                        # Sometimes it might be a relative path based on CWD or output_dir
-                        downloaded_file = Path(self.config.download.output_dir) / actual_filename
+# ---------------------------------------------------------------------------
+# Convert screen
+# ---------------------------------------------------------------------------
 
-                    if not downloaded_file.exists():
-                        app.call_from_thread(status.update, f"File not found: {actual_filename}")
-                        return
 
-                    compatible_file = downloaded_file.with_suffix(".mp4")
-                    # If already MP4, use a different name to avoid overwriting input while reading
-                    if downloaded_file.suffix == ".mp4":
-                        compatible_file = downloaded_file.with_stem(downloaded_file.stem + "-compatible").with_suffix(".mp4")
+class ConvertScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", priority=True),
+    ]
 
-                    codec_map = {
-                        "h264": "libx264",
-                        "h265": "libx265",
-                        "vp9": "libvpx-vp9",
-                    }
-                    vcodec = codec_map.get(self.config.format.codec, "libx264")
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.config = config
+        self._proc: subprocess.Popen | None = None
 
-                    try:
-                        ffmpeg_cmd = [
-                            "ffmpeg",
-                            "-y", # Overwrite output if it exists
-                            "-i",
-                            str(downloaded_file),
-                            "-c:v",
-                            vcodec,
-                        ]
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            with VerticalScroll(id="sidebar"):
+                yield Label("Convert Media", classes="title")
+                yield Static("", id="convert-config-summary", classes="config-summary")
+            with VerticalScroll(id="main-content"):
+                yield Label("Enter or drop file path:")
+                yield Input(
+                    placeholder="/path/to/file.webm", id="file-input"
+                )
+                yield Button("Start Conversion", id="btn-start-convert", variant="success")
+                yield Static("", id="convert-status-line")
+                yield Static("", id="convert-output-log")
+        yield Footer()
 
-                        if vcodec == "libx264":
-                            ffmpeg_cmd.extend(["-preset", "slow", "-crf", "22"])
+    def update_config_summary(self) -> None:
+        summary = self.query_one("#convert-config-summary", Static)
+        text = f"Target Codec: {self.config.format.codec}\n"
+        if self.config.download.extract_audio:
+            text += f"Audio: {self.config.download.audio_format}\n"
+        summary.update(text)
 
-                        ffmpeg_cmd.extend(["-c:a", "aac", str(compatible_file)])
+    def on_mount(self) -> None:
+        self.update_config_summary()
+        self.query_one("#file-input", Input).focus()
 
-                        app.call_from_thread(status.update, f"Converting to {vcodec}...")
-                        ffmpeg_proc = subprocess.Popen(
-                            ffmpeg_cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            bufsize=1,
-                        )
-                        self._proc = ffmpeg_proc
+    def on_paste(self, event: events.Paste) -> None:
+        """Handle files being dropped (pasted) onto the terminal."""
+        if event.text:
+            # Set the pasted text (often a file path) as the input value
+            self.query_one("#file-input", Input).value = event.text.strip().strip("'\"")
 
-                        assert ffmpeg_proc.stdout is not None
-                        for raw_line in ffmpeg_proc.stdout:
-                            line = raw_line.rstrip()
-                            if not line:
-                                continue
-                            app.call_from_thread(status.update, "Converting...")
-                            lines.append(line)
-                            tail = "\n".join(lines[-20:])
-                            app.call_from_thread(log.update, tail)
+    def action_go_back(self) -> None:
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+            self._proc.wait()
+        self.app.pop_screen()
 
-                        ffmpeg_proc.wait()
-                        if ffmpeg_proc.returncode == 0:
-                            app.call_from_thread(
-                                status.update, f"Converted to compatible MP4 ({self.config.format.codec})"
-                            )
-                        else:
-                            app.call_from_thread(status.update, f"FFmpeg conversion failed (exit {ffmpeg_proc.returncode})!")
-                    except Exception as e:
-                        app.call_from_thread(status.update, "FFmpeg conversion exception!")
-                        app.call_from_thread(log.update, str(e))
+    @on(Button.Pressed, "#btn-start-convert")
+    def on_start_convert(self) -> None:
+        if self._proc and self._proc.poll() is None:
+            return
+
+        file_path_str = self.query_one("#file-input", Input).value.strip()
+        # Remove quotes if dragged and dropped in some terminals
+        file_path_str = file_path_str.strip("'\"")
+        
+        # Unescape backslashes (common in some terminals when dropping files with spaces)
+        if "\\" in file_path_str:
+            try:
+                # Use shlex to handle shell-style escapes (common on Mac)
+                parts = shlex.split(file_path_str)
+                if parts:
+                    file_path_str = parts[0]
+            except Exception:
+                # Fallback to simple replacement if shlex fails
+                file_path_str = file_path_str.replace("\\ ", " ")
+
+        if not file_path_str:
+            return
+
+        status = self.query_one("#convert-status-line", Static)
+        log = self.query_one("#convert-output-log", Static)
+        status.update("Starting conversion...")
+        log.update("")
+
+        downloaded_file = Path(file_path_str)
+        if not downloaded_file.exists():
+            status.update("File does not exist.")
+            return
+
+        compatible_file = downloaded_file.with_suffix(".mp4")
+        if downloaded_file.suffix == ".mp4":
+            compatible_file = downloaded_file.with_stem(downloaded_file.stem + "-converted").with_suffix(".mp4")
+
+        codec_map = {
+            "h264": "libx264",
+            "h265": "libx265",
+            "vp9": "libvpx-vp9",
+        }
+        vcodec = codec_map.get(self.config.format.codec, "libx264")
+
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(downloaded_file),
+            "-c:v",
+            vcodec,
+        ]
+        
+        if vcodec == "libx264":
+            ffmpeg_cmd.extend(["-preset", "slow", "-crf", "22"])
+        
+        ffmpeg_cmd.extend(["-c:a", "aac", str(compatible_file)])
+
+        app = self.app
+
+        def _stream() -> None:
+            try:
+                proc = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                self._proc = proc
+
+                lines: list[str] = []
+                assert proc.stdout is not None
+                for raw_line in proc.stdout:
+                    line = raw_line.rstrip()
+                    if not line:
+                        continue
+
+                    lines.append(line)
+                    tail = "\n".join(lines[-20:])
+                    app.call_from_thread(log.update, tail)
+
+                proc.wait()
+                if proc.returncode == 0:
+                    app.call_from_thread(status.update, f"Done! Saved as {compatible_file.name}")
                 else:
                     app.call_from_thread(
                         status.update, f"Failed (exit {proc.returncode})"

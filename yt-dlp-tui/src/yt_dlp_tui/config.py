@@ -96,6 +96,23 @@ class Config:
         if self.format.container != "best":
             args.extend(["--merge-output-format", self.format.container])
 
+        # Recode if a specific codec is requested
+        if self.format.codec != "none":
+            recode_map = {
+                "h264": "mp4",
+                "h265": "mp4",
+                "vp9": "webm",
+            }
+            target = recode_map.get(self.format.codec)
+            if target:
+                args.extend(["--recode-video", target])
+                # Ensure h265 uses correct encoder if requested
+                if self.format.codec == "h265":
+                    args.extend(["--postprocessor-args", "ffmpeg:-c:v libx265"])
+                elif self.format.codec == "h264":
+                    # Optionally force slow/crf 22 for h264 as well if desired
+                    args.extend(["--postprocessor-args", "ffmpeg:-c:v libx264 -preset slow -crf 22"])
+
         # Cookies
         if self.cookie.mode == "browser":
             args.extend(["--cookies-from-browser", self.cookie.browser])
@@ -123,9 +140,22 @@ class Config:
         return args
 
     def _build_format_string(self) -> str:
-        fmt = QUALITY_FORMAT_MAP.get(self.format.quality, "bv*+ba/b")
+        base_selector = QUALITY_FORMAT_MAP.get(self.format.quality, "bv*+ba/b")
+        
+        # If codec is h264, prefer it natively
+        if self.format.codec == "h264":
+            # Prefer avc1+mp4a (native h264/aac)
+            h264_selector = base_selector.replace("bv*", "bv*[vcodec^=avc1]").replace("ba", "ba[acodec^=mp4a]")
+            # Fallback to base selector if not found
+            return f"{h264_selector}/{base_selector}"
+        
+        if self.format.codec == "vp9":
+            # Prefer vp9
+            vp9_selector = base_selector.replace("bv*", "bv*[vcodec^=vp09]")
+            return f"{vp9_selector}/{base_selector}"
 
-        # Prefer specific container extensions when not "best"
+        # Otherwise just return the base selector, possibly with container filters
+        fmt = base_selector
         if self.format.container == "mp4":
             fmt = fmt.replace("bv*", "bv*[ext=mp4]").replace("ba", "ba[ext=m4a]")
         elif self.format.container in ("mkv", "webm"):
