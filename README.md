@@ -11,7 +11,7 @@ A collection of YouTube download utilities and wrappers, featuring a Textual-bas
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.11+ (Tested on 3.13.2)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [ffmpeg](https://ffmpeg.org/) (required for merging formats)
 

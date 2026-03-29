@@ -1,10 +1,17 @@
+import shlex
+import subprocess
+import threading
+from pathlib import Path
+
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
+from textual.screen import Screen
 from textual.widgets import (
     Button,
-    Header,
     Footer,
+    Header,
     Input,
     Label,
     RadioButton,
@@ -12,16 +19,8 @@ from textual.widgets import (
     Static,
     Switch,
 )
-from textual import on, events
-from textual.screen import Screen
 
-import subprocess
-import threading
-import shlex
-from pathlib import Path
-
-from .config import Config, BROWSERS, QUALITIES, CONTAINERS, CODECS, AUDIO_FORMATS
-
+from .config import AUDIO_FORMATS, BROWSERS, CODECS, CONTAINERS, QUALITIES, Config
 
 # ---------------------------------------------------------------------------
 # Helpers for RadioSet
@@ -193,10 +192,10 @@ class ConvertScreen(Screen):
                 yield Static("", id="convert-config-summary", classes="config-summary")
             with VerticalScroll(id="main-content"):
                 yield Label("Enter or drop file path:")
-                yield Input(
-                    placeholder="/path/to/file.webm", id="file-input"
+                yield Input(placeholder="/path/to/file.webm", id="file-input")
+                yield Button(
+                    "Start Conversion", id="btn-start-convert", variant="success"
                 )
-                yield Button("Start Conversion", id="btn-start-convert", variant="success")
                 yield Static("", id="convert-status-line")
                 yield Static("", id="convert-output-log")
         yield Footer()
@@ -232,8 +231,9 @@ class ConvertScreen(Screen):
         file_path_str = self.query_one("#file-input", Input).value.strip()
         # Remove quotes if dragged and dropped in some terminals
         file_path_str = file_path_str.strip("'\"")
-        
-        # Unescape backslashes (common in some terminals when dropping files with spaces)
+
+        # Unescape backslashes (common in some terminals when dropping
+        # files with spaces)
         if "\\" in file_path_str:
             try:
                 # Use shlex to handle shell-style escapes (common on Mac)
@@ -259,7 +259,9 @@ class ConvertScreen(Screen):
 
         compatible_file = downloaded_file.with_suffix(".mp4")
         if downloaded_file.suffix == ".mp4":
-            compatible_file = downloaded_file.with_stem(downloaded_file.stem + "-converted").with_suffix(".mp4")
+            compatible_file = downloaded_file.with_stem(
+                downloaded_file.stem + "-converted"
+            ).with_suffix(".mp4")
 
         codec_map = {
             "h264": "libx264",
@@ -276,10 +278,10 @@ class ConvertScreen(Screen):
             "-c:v",
             vcodec,
         ]
-        
+
         if vcodec == "libx264":
             ffmpeg_cmd.extend(["-preset", "slow", "-crf", "22"])
-        
+
         ffmpeg_cmd.extend(["-c:a", "aac", str(compatible_file)])
 
         app = self.app
@@ -308,7 +310,9 @@ class ConvertScreen(Screen):
 
                 proc.wait()
                 if proc.returncode == 0:
-                    app.call_from_thread(status.update, f"Done! Saved as {compatible_file.name}")
+                    app.call_from_thread(
+                        status.update, f"Done! Saved as {compatible_file.name}"
+                    )
                 else:
                     app.call_from_thread(
                         status.update, f"Failed (exit {proc.returncode})"
@@ -458,8 +462,7 @@ class ConfigScreen(Screen):
             or "best"
         )
         self.config.format.codec = (
-            _selected_key(self.query_one("#codec-select", RadioSet), "codec")
-            or "h264"
+            _selected_key(self.query_one("#codec-select", RadioSet), "codec") or "h264"
         )
         self.config.download.output_dir = self.query_one("#output-dir", Input).value
         self.config.download.output_template = self.query_one(
@@ -515,3 +518,7 @@ class YtDlpTUI(App):
 def run() -> None:
     app = YtDlpTUI()
     app.run()
+
+
+if __name__ == "__main__":
+    run()

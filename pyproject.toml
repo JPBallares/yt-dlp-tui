@@ -1,0 +1,39 @@
+[tool.ruff]
+# Target version for the project
+target-version = "py311"
+
+# Line length to follow
+line-length = 88
+
+# Exclude common directories
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# Enable specific linting rules
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort (import sorting)
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+
+# Rules to ignore
+ignore = []
+
+# Configuration for isort (inside ruff)
+[tool.ruff.lint.isort]
+known-first-party = ["yt_dlp_tui"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["yt_dlp_tui"]

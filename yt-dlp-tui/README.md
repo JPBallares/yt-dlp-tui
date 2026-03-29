@@ -36,7 +36,7 @@ yt-dlp-tui/
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.11+ (Tested on 3.13.2)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) installed and on `PATH`
 - [ffmpeg](https://ffmpeg.org/) (required by yt-dlp for merging formats)
 - [uv](https://github.com/astral-sh/uv) (recommended) or pip

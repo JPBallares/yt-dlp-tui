@@ -1,16 +1,26 @@
 from __future__ import annotations
-from pathlib import Path
-from dataclasses import dataclass, field, asdict
-from typing import Any
+
+import shutil
 import tomllib
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
 import platformdirs
 import toml
-import shutil
 
 CONFIG_DIR = Path(platformdirs.user_config_dir("yt-dlp-tui"))
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
-BROWSERS = ["firefox", "chrome", "chromium", "edge", "opera", "brave", "vivaldi", "safari"]
+BROWSERS = [
+    "firefox",
+    "chrome",
+    "chromium",
+    "edge",
+    "opera",
+    "brave",
+    "vivaldi",
+    "safari",
+]
 QUALITIES = ["best", "1080p", "720p", "480p", "360p", "audio"]
 CONTAINERS = ["best", "mkv", "mp4", "webm"]
 CODECS = ["h264", "h265", "vp9", "none"]
@@ -111,7 +121,12 @@ class Config:
                     args.extend(["--postprocessor-args", "ffmpeg:-c:v libx265"])
                 elif self.format.codec == "h264":
                     # Optionally force slow/crf 22 for h264 as well if desired
-                    args.extend(["--postprocessor-args", "ffmpeg:-c:v libx264 -preset slow -crf 22"])
+                    args.extend(
+                        [
+                            "--postprocessor-args",
+                            "ffmpeg:-c:v libx264 -preset slow -crf 22",
+                        ]
+                    )
 
         # Cookies
         if self.cookie.mode == "browser":
@@ -141,14 +156,16 @@ class Config:
 
     def _build_format_string(self) -> str:
         base_selector = QUALITY_FORMAT_MAP.get(self.format.quality, "bv*+ba/b")
-        
+
         # If codec is h264, prefer it natively
         if self.format.codec == "h264":
             # Prefer avc1+mp4a (native h264/aac)
-            h264_selector = base_selector.replace("bv*", "bv*[vcodec^=avc1]").replace("ba", "ba[acodec^=mp4a]")
+            h264_selector = base_selector.replace("bv*", "bv*[vcodec^=avc1]").replace(
+                "ba", "ba[acodec^=mp4a]"
+            )
             # Fallback to base selector if not found
             return f"{h264_selector}/{base_selector}"
-        
+
         if self.format.codec == "vp9":
             # Prefer vp9
             vp9_selector = base_selector.replace("bv*", "bv*[vcodec^=vp09]")
