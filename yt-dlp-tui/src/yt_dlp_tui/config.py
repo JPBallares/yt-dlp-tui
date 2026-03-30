@@ -25,6 +25,7 @@ QUALITIES = ["best", "1080p", "720p", "480p", "360p", "audio"]
 CONTAINERS = ["best", "mkv", "mp4", "webm"]
 CODECS = ["h264", "h265", "vp9", "none"]
 AUDIO_FORMATS = ["mp3", "flac", "m4a", "wav", "opus"]
+ARIA2_CONNECTIONS = ["4", "8", "16"]
 
 QUALITY_FORMAT_MAP = {
     "best": "bv*+ba/b",
@@ -47,7 +48,7 @@ class CookieSettings:
 class FormatSettings:
     quality: str = "best"
     container: str = "mp4"
-    codec: str = "h264"
+    codec: str = "none"
 
 
 @dataclass
@@ -58,6 +59,12 @@ class DownloadSettings:
     embed_metadata: bool = False
     extract_audio: bool = False
     audio_format: str = "mp3"
+    use_aria2c: bool = False
+    aria2_connections: int = 8
+    desktop_notifications: bool = True
+    embed_subs: bool = False
+    write_auto_subs: bool = False
+    sub_langs: str = "en.*"
 
 
 @dataclass
@@ -147,6 +154,29 @@ class Config:
             args.append("--embed-metadata")
         if self.download.extract_audio:
             args.extend(["-x", "--audio-format", self.download.audio_format])
+
+        # Subtitles
+        if self.download.embed_subs:
+            args.append("--embed-subs")
+        if self.download.write_auto_subs:
+            args.append("--write-auto-subs")
+        if self.download.sub_langs:
+            args.extend(["--sub-langs", self.download.sub_langs])
+
+        # External downloader
+        if self.download.use_aria2c:
+            conn = str(self.download.aria2_connections)
+            args.extend(
+                [
+                    "--downloader",
+                    "aria2c",
+                    "--downloader-args",
+                    (
+                        f"aria2c:-c -j {conn} -x {conn} -s {conn} "
+                        "-k 1M --summary-interval=1"
+                    ),
+                ]
+            )
 
         # Progress: use newline mode so each update is a separate line
         args.append("--newline")

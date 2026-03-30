@@ -15,6 +15,7 @@ Built with [Textual](https://github.com/Textualize/textual). Downloads run as a 
 - **Download Options** -- embed thumbnails, metadata, and audio extraction
 - **Live Progress** -- real-time yt-dlp output streamed into the TUI
 - **Persistent Config** -- settings saved to a TOML file across sessions
+- **External Downloader Support** -- use `aria2c` for multi-connection download speed boosts
 
 ## Project Structure
 
@@ -42,6 +43,7 @@ yt-dlp-tui/
 - Python 3.11+ (Tested on 3.13.2)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) installed and on `PATH`
 - [ffmpeg](https://ffmpeg.org/) (required by yt-dlp for merging formats)
+- [aria2](https://aria2.github.io/) (optional, for faster multi-connection downloads)
 - [uv](https://github.com/astral-sh/uv) (recommended) or pip
 
 ### Installation
@@ -121,6 +123,32 @@ When container is set to `mp4`, the format string becomes `bv*[ext=mp4]+ba[ext=m
 | **Embed Metadata** | off                            | `--embed-metadata`                   |
 | **Extract Audio**  | off                            | `-x --audio-format <format>`         |
 | **Audio Format**   | mp3                            | mp3, flac, m4a, wav, opus            |
+| **Use aria2c**     | off                            | use `aria2c` for multi-connection downloads |
+
+### Faster Downloads with aria2c
+
+You can significantly speed up downloads by enabling `aria2c` support in the config. This allows `yt-dlp` to open multiple connections per file.
+
+#### 1. Install aria2
+
+- **macOS**: `brew install aria2`
+- **Linux**: `sudo apt install aria2` (Ubuntu/Debian) or `sudo pacman -S aria2` (Arch)
+- **Windows**: `scoop install aria2` or download from [aria2.github.io](https://aria2.github.io/)
+
+#### 2. Enable in TUI
+
+1. Press `c` to open **Config**
+2. Scroll to **Download Settings**
+3. Toggle **Use aria2c (external downloader)** to **on**
+4. Click **Save Config**
+
+When enabled, the TUI uses these optimized defaults: `-c -j 16 -x 16 -s 16 -k 1M --summary-interval=1`.
+
+### Performance Tips
+
+- **Codec: None (Recommended)**: By default, the TUI is now set to `none`. This tells `yt-dlp` to download the best matching streams and "mux" (copy) them into your container without re-encoding. This is much faster.
+- **Codec: H.264/H.265**: Setting a specific codec forces `yt-dlp` to re-encode the entire video using FFmpeg. This is very slow and CPU-intensive. Only use this if you need to ensure compatibility with a specific device that cannot play the original format.
+- **Container**: `mp4` is the default. If `codec` is `none`, `yt-dlp` will try to find native `mp4` streams or mux them into an `mp4` container.
 
 ### Cookie Tips
 

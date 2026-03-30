@@ -1,8 +1,10 @@
+import json
 import shlex
 import subprocess
 import threading
 from pathlib import Path
 
+from plyer import notification
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -20,7 +22,15 @@ from textual.widgets import (
     Switch,
 )
 
-from .config import AUDIO_FORMATS, BROWSERS, CODECS, CONTAINERS, QUALITIES, Config
+from .config import (
+    ARIA2_CONNECTIONS,
+    AUDIO_FORMATS,
+    BROWSERS,
+    CODECS,
+    CONTAINERS,
+    QUALITIES,
+    Config,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers for RadioSet
@@ -73,9 +83,17 @@ class MainScreen(Screen):
                 yield Static("", id="config-summary", classes="config-summary")
             with VerticalScroll(id="main-content"):
                 yield Label("Enter URL:")
-                yield Input(
-                    placeholder="Enter URL (YouTube, Facebook, etc.)", id="url-input"
-                )
+                with Horizontal(id="url-row"):
+                    yield Input(
+                        placeholder="Enter URL (YouTube, Facebook, etc.)",
+                        id="url-input",
+                    )
+                    yield Button("Fetch Info", id="btn-fetch", variant="primary")
+
+                with VerticalScroll(id="preview-area", classes="hidden"):
+                    yield Label("Video Details:", classes="section-title")
+                    yield Static("", id="preview-details")
+
                 yield Button("Start Download", id="btn-start", variant="success")
                 yield Static("", id="status-line")
                 yield Static("", id="output-log")
@@ -88,6 +106,8 @@ class MainScreen(Screen):
         text += f"Codec: {self.config.format.codec}\n"
         if self.config.download.extract_audio:
             text += f"Audio: {self.config.download.audio_format}\n"
+        if self.config.download.use_aria2c:
+            text += f"Aria2: {self.config.download.aria2_connections} conn\n"
         text += f"Dir: {self.config.download.output_dir}"
         summary.update(text)
 
@@ -111,6 +131,84 @@ class MainScreen(Screen):
     def on_config_pressed(self) -> None:
         self.action_show_config()
 
+    @on(Button.Pressed, "#btn-fetch")
+    def on_fetch_info(self) -> None:
+        url = self.query_one("#url-input", Input).value.strip()
+        if not url:
+            return
+
+        status = self.query_one("#status-line", Static)
+        status.update("Fetching metadata...")
+
+        def _fetch() -> None:
+            try:
+                # Use --dump-json to get metadata without downloading
+                cmd = ["yt-dlp", "--dump-json", "--simulate", url]
+                # Pass cookies if configured
+                if self.config.cookie.mode == "browser":
+                    cmd.extend(["--cookies-from-browser", self.config.cookie.browser])
+                elif self.config.cookie.mode == "file" and self.config.cookie.file_path:
+                    cmd.extend(["--cookies", self.config.cookie.file_path])
+
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+                stdout, stderr = proc.communicate()
+
+                if proc.returncode == 0:
+                    data = json.loads(stdout)
+                    title = data.get("title", "Unknown")
+                    uploader = data.get("uploader", "Unknown")
+                    duration_sec = data.get("duration", 0)
+                    views = data.get("view_count", 0)
+                    upload_date = data.get("upload_date", "Unknown")
+
+                    # Format duration
+                    m, s = divmod(duration_sec, 60)
+                    h, m = divmod(m, 60)
+                    dur_str = (
+                        f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+                    )
+
+                    # Format view count
+                    if views >= 1_000_000:
+                        view_str = f"{views / 1_000_000:.1f}M"
+                    elif views >= 1_000:
+                        view_str = f"{views / 1_000:.1f}K"
+                    else:
+                        view_str = str(views)
+
+                    # Format date (YYYYMMDD to YYYY-MM-DD)
+                    if len(upload_date) == 8:
+                        date_str = (
+                            f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+                        )
+                    else:
+                        date_str = upload_date
+
+                    preview_text = (
+                        f"[bold]{title}[/bold]\n"
+                        f"Uploader: {uploader}\n"
+                        f"Duration: {dur_str} | Views: {view_str} | Date: {date_str}"
+                    )
+
+                    def update_ui() -> None:
+                        details = self.query_one("#preview-details", Static)
+                        area = self.query_one("#preview-area", VerticalScroll)
+                        details.update(preview_text)
+                        area.remove_class("hidden")
+                        status.update("Metadata loaded.")
+
+                    self.app.call_from_thread(update_ui)
+                else:
+                    self.app.call_from_thread(
+                        status.update, f"Metadata fetch failed: {stderr.strip()[:100]}"
+                    )
+            except Exception as e:
+                self.app.call_from_thread(status.update, f"Error: {str(e)}")
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
     @on(Button.Pressed, "#btn-start")
     def on_start_download(self) -> None:
         if self._proc and self._proc.poll() is None:
@@ -124,6 +222,8 @@ class MainScreen(Screen):
         log = self.query_one("#output-log", Static)
         status.update("Starting...")
         log.update("")
+
+        self.app.notify_desktop("Download Started", f"Processing: {url}")
 
         cmd = self.config.build_cli_args(url)
         app = self.app
@@ -157,13 +257,20 @@ class MainScreen(Screen):
                 proc.wait()
                 if proc.returncode == 0:
                     app.call_from_thread(status.update, "Done!")
+                    app.notify_desktop(
+                        "Download Finished", f"Successfully downloaded: {url}"
+                    )
                 else:
                     app.call_from_thread(
                         status.update, f"Failed (exit {proc.returncode})"
                     )
+                    app.notify_desktop(
+                        "Download Failed", f"Error code {proc.returncode} for: {url}"
+                    )
             except Exception as e:
                 app.call_from_thread(status.update, "Failed!")
                 app.call_from_thread(log.update, str(e))
+                app.notify_desktop("Download Error", f"Unexpected error: {str(e)}")
 
         t = threading.Thread(target=_stream, daemon=True)
         t.start()
@@ -253,6 +360,10 @@ class ConvertScreen(Screen):
         log.update("")
 
         downloaded_file = Path(file_path_str)
+        self.app.notify_desktop(
+            "Conversion Started", f"Processing: {downloaded_file.name}"
+        )
+
         if not downloaded_file.exists():
             status.update("File does not exist.")
             return
@@ -313,13 +424,22 @@ class ConvertScreen(Screen):
                     app.call_from_thread(
                         status.update, f"Done! Saved as {compatible_file.name}"
                     )
+                    app.notify_desktop(
+                        "Conversion Finished",
+                        f"Successfully converted to {compatible_file.name}",
+                    )
                 else:
                     app.call_from_thread(
                         status.update, f"Failed (exit {proc.returncode})"
                     )
+                    app.notify_desktop(
+                        "Conversion Failed",
+                        f"Error code {proc.returncode} for: {downloaded_file.name}",
+                    )
             except Exception as e:
                 app.call_from_thread(status.update, "Failed!")
                 app.call_from_thread(log.update, str(e))
+                app.notify_desktop("Conversion Error", f"Unexpected error: {str(e)}")
 
         t = threading.Thread(target=_stream, daemon=True)
         t.start()
@@ -385,8 +505,29 @@ class ConfigScreen(Screen):
                 yield Label("Embed Metadata:")
                 yield Switch(id="embed-meta")
             with Horizontal(classes="switch-row"):
+                yield Label("Embed Subtitles:")
+                yield Switch(id="embed-subs")
+            with Horizontal(classes="switch-row"):
+                yield Label("Include Auto-generated Subtitles:")
+                yield Switch(id="write-auto-subs")
+
+            yield Label("Subtitle Languages (e.g., en,es or en.*):")
+            yield Input(id="sub-langs")
+
+            with Horizontal(classes="switch-row"):
                 yield Label("Extract Audio Only:")
                 yield Switch(id="extract-audio")
+            with Horizontal(classes="switch-row"):
+                yield Label("Desktop Notifications:")
+                yield Switch(id="desktop-notifications")
+            with Horizontal(classes="switch-row"):
+                yield Label("Use aria2c (external downloader):")
+                yield Switch(id="use-aria2c")
+
+            yield Label("Aria2 Connections:")
+            with RadioSet(id="aria2-conn-select"):
+                for conn in ARIA2_CONNECTIONS:
+                    yield RadioButton(conn, id=_radio_id("aria2conn", conn))
 
             yield Label("Audio Format:")
             with RadioSet(id="audio-format"):
@@ -431,9 +572,23 @@ class ConfigScreen(Screen):
         self.query_one(
             "#embed-meta", Switch
         ).value = self.config.download.embed_metadata
+        self.query_one("#embed-subs", Switch).value = self.config.download.embed_subs
+        self.query_one(
+            "#write-auto-subs", Switch
+        ).value = self.config.download.write_auto_subs
+        self.query_one("#sub-langs", Input).value = self.config.download.sub_langs
         self.query_one(
             "#extract-audio", Switch
         ).value = self.config.download.extract_audio
+        self.query_one(
+            "#desktop-notifications", Switch
+        ).value = self.config.download.desktop_notifications
+        self.query_one("#use-aria2c", Switch).value = self.config.download.use_aria2c
+        _select_key(
+            self.query_one("#aria2-conn-select", RadioSet),
+            "aria2conn",
+            str(self.config.download.aria2_connections),
+        )
         _select_key(
             self.query_one("#audio-format", RadioSet),
             "audio",
@@ -474,9 +629,22 @@ class ConfigScreen(Screen):
         self.config.download.embed_metadata = self.query_one(
             "#embed-meta", Switch
         ).value
+        self.config.download.embed_subs = self.query_one("#embed-subs", Switch).value
+        self.config.download.write_auto_subs = self.query_one(
+            "#write-auto-subs", Switch
+        ).value
+        self.config.download.sub_langs = self.query_one("#sub-langs", Input).value
         self.config.download.extract_audio = self.query_one(
             "#extract-audio", Switch
         ).value
+        self.config.download.desktop_notifications = self.query_one(
+            "#desktop-notifications", Switch
+        ).value
+        self.config.download.use_aria2c = self.query_one("#use-aria2c", Switch).value
+        self.config.download.aria2_connections = int(
+            _selected_key(self.query_one("#aria2-conn-select", RadioSet), "aria2conn")
+            or "8"
+        )
         self.config.download.audio_format = (
             _selected_key(self.query_one("#audio-format", RadioSet), "audio") or "mp3"
         )
@@ -493,11 +661,23 @@ class ConfigScreen(Screen):
 class YtDlpTUI(App):
     CSS = """
     Screen { layout: horizontal; }
-    #sidebar { width: 20; border: solid $primary; padding: 1; }
+    #sidebar { width: 25; border: solid $primary; padding: 1; }
     #main-content { padding: 1; }
+    #url-row { height: 3; margin-bottom: 1; }
+    #url-input { width: 1fr; }
+    #btn-fetch { width: 15; margin-left: 1; }
+    #preview-area {
+        height: auto;
+        max-height: 12;
+        border: double $accent;
+        padding: 1;
+        margin-bottom: 1;
+        background: $surface;
+    }
+    #preview-details { height: auto; }
     #config-scroll { padding: 1; }
     .title { text-style: bold; margin-bottom: 1; }
-    .section-title { text-style: bold; margin-top: 2; margin-bottom: 1; }
+    .section-title { text-style: bold; margin-bottom: 1; color: $accent; }
     .config-summary { margin-top: 2; border: solid $secondary; padding: 1; }
     .hidden { display: none; }
     .switch-row { height: 3; }
@@ -510,6 +690,18 @@ class YtDlpTUI(App):
     def __init__(self) -> None:
         super().__init__()
         self.config = Config.load()
+
+    def notify_desktop(self, title: str, message: str) -> None:
+        """Send a desktop notification if enabled in config."""
+        if self.config.download.desktop_notifications:
+            try:
+                notification.notify(
+                    title=title,
+                    message=message,
+                    app_name="yt-dlp-tui",
+                )
+            except Exception:
+                pass  # Ignore notification failures
 
     def on_mount(self) -> None:
         self.push_screen(MainScreen(self.config))
