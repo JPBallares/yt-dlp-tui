@@ -66,18 +66,21 @@ class MainScreen(Screen):
         Binding("q", "app.quit", "Quit", priority=True),
         Binding("v", "show_convert", "Convert", priority=True),
         Binding("c", "show_config", "Config", priority=True),
+        Binding("u", "show_queue", "Queue", priority=True),
+        Binding("s", "show_search", "Search", priority=True),
     ]
 
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        self._proc: subprocess.Popen | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
             with VerticalScroll(id="sidebar"):
                 yield Label("yt-dlp TUI", classes="title")
+                yield Button("Queue & History", id="btn-queue")
+                yield Button("Search", id="btn-search")
                 yield Button("Convert", id="btn-convert")
                 yield Button("Config", id="btn-config")
                 yield Static("", id="config-summary", classes="config-summary")
@@ -94,7 +97,7 @@ class MainScreen(Screen):
                     yield Label("Video Details:", classes="section-title")
                     yield Static("", id="preview-details")
 
-                yield Button("Start Download", id="btn-start", variant="success")
+                yield Button("Add to Queue", id="btn-start", variant="success")
                 yield Static("", id="status-line")
                 yield Static("", id="output-log")
         yield Footer()
@@ -116,6 +119,20 @@ class MainScreen(Screen):
 
     def on_screen_resume(self) -> None:
         self.update_config_summary()
+
+    def action_show_queue(self) -> None:
+        self.app.push_screen(QueueScreen(self.config))
+
+    @on(Button.Pressed, "#btn-queue")
+    def on_queue_pressed(self) -> None:
+        self.action_show_queue()
+
+    def action_show_search(self) -> None:
+        self.app.push_screen(SearchScreen(self.config))
+
+    @on(Button.Pressed, "#btn-search")
+    def on_search_pressed(self) -> None:
+        self.action_show_search()
 
     def action_show_convert(self) -> None:
         self.app.push_screen(ConvertScreen(self.config))
@@ -210,70 +227,238 @@ class MainScreen(Screen):
         threading.Thread(target=_fetch, daemon=True).start()
 
     @on(Button.Pressed, "#btn-start")
-    def on_start_download(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            return  # already running
-
-        url = self.query_one("#url-input", Input).value.strip()
+    def on_add_to_queue(self) -> None:
+        url_input = self.query_one("#url-input", Input)
+        url = url_input.value.strip()
         if not url:
             return
 
-        status = self.query_one("#status-line", Static)
-        log = self.query_one("#output-log", Static)
-        status.update("Starting...")
-        log.update("")
+        from .config import DownloadTask
 
-        self.app.notify_desktop("Download Started", f"Processing: {url}")
+        task = DownloadTask(url=url)
+        # If we have preview data, use it
+        details = self.query_one("#preview-details", Static)
+        if not details.has_class("hidden") and details.renderable:
+            # Simple extraction from the formatted text
+            content = str(details.renderable)
+            title_line = content.split("\n")[0]
+            # Strip [bold] tags if they are literal in the string
+            task.title = title_line.replace("[bold]", "").replace("[/bold]", "")
 
-        cmd = self.config.build_cli_args(url)
-        app = self.app
+        self.app.add_task(task)
+        url_input.value = ""
+        # Hide preview area
+        self.query_one("#preview-area", VerticalScroll).add_class("hidden")
+        self.query_one("#status-line", Static).update(f"Added to queue: {task.url}")
 
-        def _stream() -> None:
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
+
+# ---------------------------------------------------------------------------
+# Queue & History screen
+# ---------------------------------------------------------------------------
+
+
+class QueueScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", priority=True),
+        Binding("c", "clear_history", "Clear History", priority=True),
+    ]
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.config = config
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            with VerticalScroll(id="sidebar"):
+                yield Label("Queue & History", classes="title")
+                yield Button("Back", id="btn-back")
+                yield Button("Clear History", id="btn-clear-history", variant="error")
+            with VerticalScroll(id="main-content"):
+                yield Label("Active Queue", classes="section-title")
+                yield Static("No active downloads", id="queue-list")
+                yield Label("Download History", classes="section-title")
+                yield Static("No history", id="history-list")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.set_interval(1.0, self.refresh_lists)
+        self.refresh_lists()
+
+    def refresh_lists(self) -> None:
+        queue_list = self.query_one("#queue-list", Static)
+        history_list = self.query_one("#history-list", Static)
+
+        queue = self.app.download_queue
+        history = self.app.history
+
+        if not queue:
+            queue_list.update("No active downloads")
+        else:
+            queue_text = ""
+            for task in queue:
+                title = task.title or task.url
+                status_color = "yellow" if task.status == "downloading" else "white"
+                queue_text += (
+                    f"[{status_color}]{task.status.upper()}[/{status_color}] {title}\n"
                 )
-                self._proc = proc
+                if task.status == "downloading":
+                    queue_text += (
+                        f"  Progress: {task.progress} | "
+                        f"Speed: {task.speed} | ETA: {task.eta}\n"
+                    )
+                queue_text += "-" * 20 + "\n"
+            queue_list.update(queue_text)
 
-                lines: list[str] = []
-                assert proc.stdout is not None
-                for raw_line in proc.stdout:
-                    line = raw_line.rstrip()
-                    if not line:
-                        continue
+        if not history:
+            history_list.update("No history")
+        else:
+            history_text = ""
+            # Show last 20 history items
+            for task in reversed(history[-20:]):
+                title = task.title or task.url
+                status_color = "green" if task.status == "finished" else "red"
+                history_text += (
+                    f"[{status_color}]{task.status.upper()}[/{status_color}] {title}\n"
+                )
+                history_text += f"  Date: {task.timestamp}\n"
+                history_text += "-" * 20 + "\n"
+            history_list.update(history_text)
 
-                    # Show latest line as status
-                    app.call_from_thread(status.update, line)
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
 
-                    # Collect all lines for the log area (last 20)
-                    lines.append(line)
-                    tail = "\n".join(lines[-20:])
-                    app.call_from_thread(log.update, tail)
+    @on(Button.Pressed, "#btn-back")
+    def on_back_pressed(self) -> None:
+        self.action_go_back()
 
-                proc.wait()
+    def action_clear_history(self) -> None:
+        self.app.history = []
+        from .config import Config
+
+        Config.save_history([])
+        self.refresh_lists()
+
+    @on(Button.Pressed, "#btn-clear-history")
+    def on_clear_history_pressed(self) -> None:
+        self.action_clear_history()
+
+
+# ---------------------------------------------------------------------------
+# Search screen
+# ---------------------------------------------------------------------------
+
+
+class SearchScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", priority=True),
+    ]
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.config = config
+        self.results = []
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal():
+            with VerticalScroll(id="sidebar"):
+                yield Label("Search Videos", classes="title")
+                yield Button("Back", id="btn-back")
+            with VerticalScroll(id="main-content"):
+                yield Label("Search Query:")
+                with Horizontal(id="search-row"):
+                    yield Input(placeholder="Search YouTube...", id="search-input")
+                    yield Button("Search", id="btn-do-search", variant="primary")
+                yield Static("", id="search-status")
+                yield VerticalScroll(id="search-results")
+        yield Footer()
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
+
+    @on(Button.Pressed, "#btn-back")
+    def on_back_pressed(self) -> None:
+        self.action_go_back()
+
+    @on(Button.Pressed, "#btn-do-search")
+    def on_do_search(self) -> None:
+        query = self.query_one("#search-input", Input).value.strip()
+        if not query:
+            return
+
+        status = self.query_one("#search-status", Static)
+        results_container = self.query_one("#search-results", VerticalScroll)
+
+        status.update("Searching...")
+        results_container.remove_children()
+
+        def _search() -> None:
+            try:
+                # Search top 10 results
+                cmd = ["yt-dlp", "--dump-json", "--simulate", f"ytsearch10:{query}"]
+                # Pass cookies if configured
+                if self.config.cookie.mode == "browser":
+                    cmd.extend(["--cookies-from-browser", self.config.cookie.browser])
+                elif self.config.cookie.mode == "file" and self.config.cookie.file_path:
+                    cmd.extend(["--cookies", self.config.cookie.file_path])
+
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+                stdout, stderr = proc.communicate()
+
                 if proc.returncode == 0:
-                    app.call_from_thread(status.update, "Done!")
-                    app.notify_desktop(
-                        "Download Finished", f"Successfully downloaded: {url}"
-                    )
+                    lines = stdout.strip().split("\n")
+                    results = []
+                    for line in lines:
+                        if line:
+                            results.append(json.loads(line))
+
+                    def display_results() -> None:
+                        status.update(f"Found {len(results)} results")
+                        for item in results:
+                            title = item.get("title", "Unknown")
+                            uploader = item.get("uploader", "Unknown")
+                            url = item.get("webpage_url", "")
+                            duration = item.get("duration", 0)
+
+                            m, s = divmod(duration, 60)
+                            dur_str = f"{m:02d}:{s:02d}"
+
+                            row = Horizontal(classes="search-result-item")
+                            row.mount(
+                                Static(
+                                    f"[bold]{title}[/bold]\n{uploader} | {dur_str}",
+                                    classes="result-info",
+                                )
+                            )
+                            btn = Button("Queue", variant="success", classes="btn-add")
+                            # Closure capture
+                            btn.url = url
+                            btn.title = title
+                            row.mount(btn)
+                            results_container.mount(row)
+
+                    self.app.call_from_thread(display_results)
                 else:
-                    app.call_from_thread(
-                        status.update, f"Failed (exit {proc.returncode})"
-                    )
-                    app.notify_desktop(
-                        "Download Failed", f"Error code {proc.returncode} for: {url}"
+                    self.app.call_from_thread(
+                        status.update, f"Search failed: {stderr.strip()[:100]}"
                     )
             except Exception as e:
-                app.call_from_thread(status.update, "Failed!")
-                app.call_from_thread(log.update, str(e))
-                app.notify_desktop("Download Error", f"Unexpected error: {str(e)}")
+                self.app.call_from_thread(status.update, f"Error: {str(e)}")
 
-        t = threading.Thread(target=_stream, daemon=True)
-        t.start()
+        threading.Thread(target=_search, daemon=True).start()
+
+    @on(Button.Pressed, ".btn-add")
+    def on_add_result(self, event: Button.Pressed) -> None:
+        from .config import DownloadTask
+
+        task = DownloadTask(url=event.button.url, title=event.button.title)
+        self.app.add_task(task)
+        event.button.variant = "default"
+        event.button.label = "Added"
+        event.button.disabled = True
 
 
 # ---------------------------------------------------------------------------
@@ -729,11 +914,26 @@ class YtDlpTUI(App):
     Input { margin-bottom: 1; }
     #status-line { margin-top: 1; }
     #output-log { margin-top: 1; }
+
+    #search-row { height: 3; margin-bottom: 1; }
+    #search-input { width: 1fr; }
+    .search-result-item {
+        height: 4;
+        border-bottom: thin $secondary;
+        margin-bottom: 1;
+        padding-bottom: 1;
+    }
+    .result-info { width: 1fr; }
+    .btn-add { width: 12; }
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.config = Config.load()
+        self.download_queue = []
+        self.history = Config.load_history()
+        self._worker_thread = None
+        self._current_task = None
 
     def notify_desktop(self, title: str, message: str) -> None:
         """Send a desktop notification if enabled in config."""
@@ -749,6 +949,105 @@ class YtDlpTUI(App):
 
     def on_mount(self) -> None:
         self.push_screen(MainScreen(self.config))
+        self._start_worker()
+
+    def add_task(self, task) -> None:
+        self.download_queue.append(task)
+        if not self._worker_thread or not self._worker_thread.is_alive():
+            self._start_worker()
+
+    def _start_worker(self) -> None:
+        if self._worker_thread and self._worker_thread.is_alive():
+            return
+        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker_thread.start()
+
+    def _worker_loop(self) -> None:
+        import re
+        import time
+
+        while True:
+            # Find next queued task
+            task = None
+            # Copy list to avoid thread safety issues while iterating
+            for t in list(self.download_queue):
+                if t.status == "queued":
+                    task = t
+                    break
+
+            if not task:
+                # No more tasks, wait a bit
+                time.sleep(2)
+                continue
+
+            self._current_task = task
+            task.status = "downloading"
+
+            self.notify_desktop(
+                "Download Started", f"Processing: {task.title or task.url}"
+            )
+
+            cmd = self.config.build_cli_args(task.url)
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+
+                assert proc.stdout is not None
+                for raw_line in proc.stdout:
+                    line = raw_line.rstrip()
+                    if not line:
+                        continue
+
+                    # Try to parse progress:
+                    # [download]  10.2% of 15.34MiB at 10.04MiB/s ETA 00:01
+                    if "[download]" in line and "%" in line:
+                        # Extract progress %
+                        prog_match = re.search(r"(\d+\.\d+)%", line)
+                        if prog_match:
+                            task.progress = prog_match.group(0)
+
+                        # Extract speed
+                        speed_match = re.search(r"at\s+([^\s]+)", line)
+                        if speed_match:
+                            task.speed = speed_match.group(1)
+
+                        # Extract ETA
+                        eta_match = re.search(r"ETA\s+([^\s]+)", line)
+                        if eta_match:
+                            task.eta = eta_match.group(1)
+
+                proc.wait()
+                if proc.returncode == 0:
+                    task.status = "finished"
+                    self.notify_desktop(
+                        "Download Finished",
+                        f"Successfully downloaded: {task.title or task.url}",
+                    )
+                else:
+                    task.status = "failed"
+                    self.notify_desktop(
+                        "Download Failed",
+                        f"Error code {proc.returncode} for: {task.title or task.url}",
+                    )
+            except Exception as e:
+                task.status = "failed"
+                self.notify_desktop("Download Error", f"Unexpected error: {str(e)}")
+
+            # Move to history and remove from queue
+            self.history.append(task)
+            if task in self.download_queue:
+                self.download_queue.remove(task)
+
+            # Save history to disk
+            from .config import Config
+
+            Config.save_history(self.history)
+            self._current_task = None
 
 
 def run() -> None:

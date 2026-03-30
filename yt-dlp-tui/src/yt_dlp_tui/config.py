@@ -4,6 +4,7 @@ import shlex
 import shutil
 import tomllib
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import platformdirs
@@ -11,6 +12,7 @@ import toml
 
 CONFIG_DIR = Path(platformdirs.user_config_dir("yt-dlp-tui"))
 CONFIG_FILE = CONFIG_DIR / "config.toml"
+HISTORY_FILE = CONFIG_DIR / "history.json"
 
 BROWSERS = [
     "firefox",
@@ -36,6 +38,25 @@ QUALITY_FORMAT_MAP = {
     "360p": "bv*[height<=360]+ba/b[height<=360]",
     "audio": "ba/b",
 }
+
+
+@dataclass
+class DownloadTask:
+    url: str
+    id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d%H%M%S%f"))
+    title: str = ""
+    status: str = "queued"  # queued, downloading, finished, failed
+    progress: str = "0%"
+    eta: str = ""
+    speed: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DownloadTask:
+        return cls(**data)
 
 
 @dataclass
@@ -105,6 +126,28 @@ class Config:
             format=FormatSettings(**data.get("format", {})),
             download=DownloadSettings(**data.get("download", {})),
         )
+
+    @classmethod
+    def save_history(cls, history: list[DownloadTask]) -> None:
+        import json
+
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump([h.to_dict() for h in history], f, indent=2)
+
+    @classmethod
+    def load_history(cls) -> list[DownloadTask]:
+        import json
+
+        if not HISTORY_FILE.exists():
+            return []
+
+        try:
+            with open(HISTORY_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return [DownloadTask.from_dict(d) for d in data]
+        except Exception:
+            return []
 
     def build_cli_args(self, url: str) -> list[str]:
         """Build the yt-dlp CLI argument list from config."""

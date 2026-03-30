@@ -12,8 +12,8 @@ This document tracks potential features and enhancements for the `ytdownloads` p
 
 ## 🟡 Medium Complexity
 
-- [ ] **Download Queue & History**: A dedicated screen to manage multiple pending and completed downloads.
-- [ ] **Search Functionality**: Support for `ytsearch:` to find and select videos directly within the TUI.
+- [x] **Download Queue & History**: A dedicated screen to manage multiple pending and completed downloads.
+- [x] **Search Functionality**: Support for `ytsearch:` to find and select videos directly within the TUI.
 - [x] **External Downloader Support**: Integration with `aria2c` for multi-connection speed boosts.
 - [ ] **Authentication Support**: Input fields for `--username`, `--password`, and `--twofactor`.
 - [ ] **Proxy Support**: Configuration for `--proxy URL` to bypass geo-restrictions.
