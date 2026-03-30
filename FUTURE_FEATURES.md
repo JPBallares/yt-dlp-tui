@@ -7,7 +7,7 @@ This document tracks potential features and enhancements for the `ytdownloads` p
 - [x] **Subtitle Support**: Toggles for `--embed-subs`, `--write-auto-subs`, and language selection (e.g., `en,es`).
 - [x] **SponsorBlock Integration**: Built-in support for removing sponsor segments (`--sponsorblock-remove all`).
 - [x] **Custom CLI Arguments**: A text field in Config for advanced users to add arbitrary `yt-dlp` flags.
-- [ ] **Rate Limiting**: Option to limit download speed (`--limit-rate`) to save bandwidth.
+- [x] **Rate Limiting**: Option to limit download speed (`--limit-rate`) to save bandwidth.
 - [ ] **Playlist Controls**: Toggles for `--yes-playlist` / `--no-playlist` and range selection (e.g., items 1-10).
 
 ## 🟡 Medium Complexity

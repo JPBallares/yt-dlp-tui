@@ -521,6 +521,9 @@ class ConfigScreen(Screen):
             yield Label("Custom yt-dlp Arguments (advanced):")
             yield Input(placeholder="--proxy URL --limit-rate 1M", id="custom-args")
 
+            yield Label("Download Rate Limit (e.g., 50K, 1M):")
+            yield Input(placeholder="50K or 1M", id="limit-rate")
+
             with Horizontal(classes="switch-row"):
                 yield Label("Extract Audio Only:")
                 yield Switch(id="extract-audio")
@@ -588,6 +591,7 @@ class ConfigScreen(Screen):
         ).value = self.config.download.sponsorblock_remove
         self.query_one("#sub-langs", Input).value = self.config.download.sub_langs
         self.query_one("#custom-args", Input).value = self.config.download.custom_args
+        self.query_one("#limit-rate", Input).value = self.config.download.limit_rate
         self.query_one(
             "#extract-audio", Switch
         ).value = self.config.download.extract_audio
@@ -649,6 +653,7 @@ class ConfigScreen(Screen):
         ).value
         self.config.download.sub_langs = self.query_one("#sub-langs", Input).value
         self.config.download.custom_args = self.query_one("#custom-args", Input).value
+        self.config.download.limit_rate = self.query_one("#limit-rate", Input).value
         self.config.download.extract_audio = self.query_one(
             "#extract-audio", Switch
         ).value

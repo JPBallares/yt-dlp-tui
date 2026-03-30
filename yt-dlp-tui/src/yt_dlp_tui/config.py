@@ -68,6 +68,7 @@ class DownloadSettings:
     sub_langs: str = "en.*"
     sponsorblock_remove: bool = False
     custom_args: str = ""
+    limit_rate: str = ""
 
 
 @dataclass
@@ -176,6 +177,10 @@ class Config:
                 args.extend(shlex.split(self.download.custom_args))
             except Exception:
                 pass  # Ignore invalid custom args
+
+        # Rate limiting
+        if self.download.limit_rate:
+            args.extend(["--limit-rate", self.download.limit_rate])
 
         # External downloader
         if self.download.use_aria2c:
