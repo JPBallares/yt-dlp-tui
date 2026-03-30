@@ -65,6 +65,7 @@ class DownloadSettings:
     embed_subs: bool = False
     write_auto_subs: bool = False
     sub_langs: str = "en.*"
+    sponsorblock_remove: bool = False
 
 
 @dataclass
@@ -162,6 +163,10 @@ class Config:
             args.append("--write-auto-subs")
         if self.download.sub_langs:
             args.extend(["--sub-langs", self.download.sub_langs])
+
+        # SponsorBlock
+        if self.download.sponsorblock_remove:
+            args.extend(["--sponsorblock-remove", "all"])
 
         # External downloader
         if self.download.use_aria2c:

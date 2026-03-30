@@ -511,6 +511,10 @@ class ConfigScreen(Screen):
                 yield Label("Include Auto-generated Subtitles:")
                 yield Switch(id="write-auto-subs")
 
+            with Horizontal(classes="switch-row"):
+                yield Label("SponsorBlock (remove segments):")
+                yield Switch(id="sponsorblock-remove")
+
             yield Label("Subtitle Languages (e.g., en,es or en.*):")
             yield Input(id="sub-langs")
 
@@ -576,6 +580,9 @@ class ConfigScreen(Screen):
         self.query_one(
             "#write-auto-subs", Switch
         ).value = self.config.download.write_auto_subs
+        self.query_one(
+            "#sponsorblock-remove", Switch
+        ).value = self.config.download.sponsorblock_remove
         self.query_one("#sub-langs", Input).value = self.config.download.sub_langs
         self.query_one(
             "#extract-audio", Switch
@@ -632,6 +639,9 @@ class ConfigScreen(Screen):
         self.config.download.embed_subs = self.query_one("#embed-subs", Switch).value
         self.config.download.write_auto_subs = self.query_one(
             "#write-auto-subs", Switch
+        ).value
+        self.config.download.sponsorblock_remove = self.query_one(
+            "#sponsorblock-remove", Switch
         ).value
         self.config.download.sub_langs = self.query_one("#sub-langs", Input).value
         self.config.download.extract_audio = self.query_one(
