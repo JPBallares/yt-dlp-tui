@@ -2,10 +2,13 @@
 
 A terminal user interface (TUI) wrapper for [yt-dlp](https://github.com/yt-dlp/yt-dlp) with saved configurations for format, quality, and cookies.
 
+While originally named for YouTube, it supports **thousands of sites** including Facebook, Instagram, Twitter, TikTok, and more—anywhere `yt-dlp` works!
+
 Built with [Textual](https://github.com/Textualize/textual). Downloads run as a subprocess so yt-dlp's JS challenge solver (JavaScriptCore on macOS) works without issues.
 
 ## Features
 
+- **Supports 1000+ Sites** -- any platform supported by `yt-dlp` (Facebook, TikTok, etc.)
 - **Configurable Quality Presets** -- best, 1080p, 720p, 480p, 360p, or audio-only
 - **Container Format Selection** -- mp4 (default), mkv, webm, or best available
 - **Cookie Management** -- use cookies from a browser or a `cookies.txt` file
@@ -77,7 +80,7 @@ All hotkeys work even when an input field is focused.
 
 ### Main Screen
 
-1. Enter a YouTube URL in the input field
+1. Enter a video URL (YouTube, Facebook, etc.) in the input field
 2. Click **Start Download**
 3. Watch live yt-dlp output stream in the log area:
    ```

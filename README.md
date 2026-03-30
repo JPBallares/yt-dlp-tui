@@ -1,6 +1,6 @@
 # ytdownloads
 
-A collection of YouTube download utilities and wrappers, featuring a Textual-based Terminal User Interface (TUI) for `yt-dlp`.
+A collection of media download utilities and wrappers, featuring a Textual-based Terminal User Interface (TUI) for `yt-dlp`. While named for YouTube, these tools support thousands of sites including Facebook, Instagram, Twitter, and TikTok.
 
 ## Project Structure
 

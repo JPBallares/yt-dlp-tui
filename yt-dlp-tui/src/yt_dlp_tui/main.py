@@ -74,7 +74,7 @@ class MainScreen(Screen):
             with VerticalScroll(id="main-content"):
                 yield Label("Enter URL:")
                 yield Input(
-                    placeholder="https://youtube.com/watch?v=...", id="url-input"
+                    placeholder="Enter URL (YouTube, Facebook, etc.)", id="url-input"
                 )
                 yield Button("Start Download", id="btn-start", variant="success")
                 yield Static("", id="status-line")
