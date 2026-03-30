@@ -55,6 +55,7 @@ class DownloadTask:
     progress: str = "0%"
     eta: str = ""
     speed: str = ""
+    error_msg: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> dict:
@@ -158,7 +159,12 @@ class Config:
 
     def build_cli_args(self, url: str) -> list[str]:
         """Build the yt-dlp CLI argument list from config."""
-        yt_dlp_bin = shutil.which("yt-dlp") or "yt-dlp"
+        yt_dlp_bin = shutil.which("yt-dlp")
+        if not yt_dlp_bin:
+            # Fallback to current executable's directory if it's a script
+            # or just 'yt-dlp'
+            yt_dlp_bin = "yt-dlp"
+
         args: list[str] = [yt_dlp_bin]
 
         # Format
@@ -198,7 +204,7 @@ class Config:
             args.extend(["--cookies", self.cookie.file_path])
 
         # Output
-        output_dir = Path(self.download.output_dir)
+        output_dir = Path(self.download.output_dir).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
         outtmpl = str(output_dir / self.download.output_template)
         args.extend(["-o", outtmpl])
@@ -206,14 +212,19 @@ class Config:
         # Post-processing
         if self.download.embed_thumbnail:
             args.append("--embed-thumbnail")
+            args.extend(["--convert-thumbnails", "jpg"])
         if self.download.embed_metadata:
             args.append("--embed-metadata")
+            args.extend(["--compat-options", "embed-metadata"])
         if self.download.extract_audio:
             args.extend(["-x", "--audio-format", self.download.audio_format])
 
         # Subtitles
         if self.download.embed_subs:
             args.append("--embed-subs")
+            # For MP4 compatibility, we might need to convert subs
+            if self.format.container == "mp4":
+                args.extend(["--convert-subs", "srt"])
         if self.download.write_auto_subs:
             args.append("--write-auto-subs")
         if self.download.sub_langs:

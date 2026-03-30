@@ -4,6 +4,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+import pyperclip
 from plyer import notification
 from textual import events, on
 from textual.app import App, ComposeResult
@@ -96,7 +97,11 @@ class MainScreen(Screen):
                     yield Button("Fetch Info", id="btn-fetch", variant="primary")
 
                 with VerticalScroll(id="preview-area", classes="hidden"):
-                    yield Label("Video Details:", classes="section-title")
+                    with Horizontal():
+                        yield Label("Video Details:", classes="section-title")
+                        yield Button(
+                            "Copy Info", id="btn-copy-preview", variant="default"
+                        )
                     yield Static("", id="preview-details")
 
                 yield Button("Add to Queue", id="btn-start", variant="success")
@@ -234,6 +239,14 @@ class MainScreen(Screen):
 
         threading.Thread(target=_fetch, daemon=True).start()
 
+    @on(Button.Pressed, "#btn-copy-preview")
+    def on_copy_preview(self) -> None:
+        details = self.query_one("#preview-details", Static)
+        if details.content:
+            text = str(details.content).replace("[bold]", "").replace("[/bold]", "")
+            pyperclip.copy(text)
+            self.query_one("#status-line", Static).update("Copied to clipboard!")
+
     @on(Button.Pressed, "#btn-start")
     def on_add_to_queue(self) -> None:
         url_input = self.query_one("#url-input", Input)
@@ -246,9 +259,10 @@ class MainScreen(Screen):
         task = DownloadTask(url=url)
         # If we have preview data, use it
         details = self.query_one("#preview-details", Static)
-        if not details.has_class("hidden") and details.renderable:
+        preview_area = self.query_one("#preview-area", VerticalScroll)
+        if not preview_area.has_class("hidden") and details.content:
             # Simple extraction from the formatted text
-            content = str(details.renderable)
+            content = str(details.content)
             title_line = content.split("\n")[0]
             # Strip [bold] tags if they are literal in the string
             task.title = title_line.replace("[bold]", "").replace("[/bold]", "")
@@ -284,9 +298,9 @@ class QueueScreen(Screen):
                 yield Button("Clear History", id="btn-clear-history", variant="error")
             with VerticalScroll(id="main-content"):
                 yield Label("Active Queue", classes="section-title")
-                yield Static("No active downloads", id="queue-list")
+                yield VerticalScroll(id="queue-list")
                 yield Label("Download History", classes="section-title")
-                yield Static("No history", id="history-list")
+                yield VerticalScroll(id="history-list")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -294,45 +308,63 @@ class QueueScreen(Screen):
         self.refresh_lists()
 
     def refresh_lists(self) -> None:
-        queue_list = self.query_one("#queue-list", Static)
-        history_list = self.query_one("#history-list", Static)
+        queue_container = self.query_one("#queue-list", VerticalScroll)
+        history_container = self.query_one("#history-list", VerticalScroll)
 
         # Work on copies to avoid "list changed size during iteration" errors
         queue = list(self.app.download_queue)
         history = list(self.app.history)
 
+        queue_container.remove_children()
         if not queue:
-            queue_list.update("No active downloads")
+            queue_container.mount(Static("No active downloads"))
         else:
-            queue_text = ""
             for task in queue:
                 title = task.title or task.url
                 status_color = "yellow" if task.status == "downloading" else "white"
-                queue_text += (
+                text = (
                     f"[{status_color}]{task.status.upper()}[/{status_color}] {title}\n"
                 )
                 if task.status == "downloading":
-                    queue_text += (
+                    text += (
                         f"  Progress: {task.progress} | "
                         f"Speed: {task.speed} | ETA: {task.eta}\n"
                     )
-                queue_text += "-" * 20 + "\n"
-            queue_list.update(queue_text)
+                queue_container.mount(Static(text, classes="queue-item"))
 
+        history_container.remove_children()
         if not history:
-            history_list.update("No history")
+            history_container.mount(Static("No history"))
         else:
-            history_text = ""
             # Show last 20 history items
             for task in reversed(history[-20:]):
                 title = task.title or task.url
                 status_color = "green" if task.status == "finished" else "red"
-                history_text += (
+
+                info = (
                     f"[{status_color}]{task.status.upper()}[/{status_color}] {title}\n"
                 )
-                history_text += f"  Date: {task.timestamp}\n"
-                history_text += "-" * 20 + "\n"
-            history_list.update(history_text)
+                if task.status == "failed" and task.error_msg:
+                    info += f"  Error: {task.error_msg}\n"
+                info += f"  Date: {task.timestamp}"
+
+                history_item_children = [Static(info, classes="history-info")]
+
+                if task.status == "failed" and task.error_msg:
+                    btn = Button(
+                        "Copy Error", variant="default", classes="btn-copy-error"
+                    )
+                    btn.error_msg = task.error_msg
+                    history_item_children.append(btn)
+
+                row = Horizontal(*history_item_children, classes="history-item-row")
+                history_container.mount(row)
+
+    @on(Button.Pressed, ".btn-copy-error")
+    def on_copy_error(self, event: Button.Pressed) -> None:
+        if hasattr(event.button, "error_msg"):
+            pyperclip.copy(event.button.error_msg)
+            self.app.notify_desktop("Copied", "Error message copied to clipboard.")
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
@@ -460,18 +492,18 @@ class SearchScreen(Screen):
                             m, s = divmod(duration, 60)
                             dur_str = f"{m:02d}:{s:02d}"
 
-                            row = Horizontal(classes="search-result-item")
-                            row.mount(
+                            btn = Button("Queue", variant="success", classes="btn-add")
+                            btn.url = url
+                            btn.title = title
+
+                            row = Horizontal(
                                 Static(
                                     f"[bold]{title}[/bold]\n{uploader} | {dur_str}",
                                     classes="result-info",
-                                )
+                                ),
+                                btn,
+                                classes="search-result-item",
                             )
-                            btn = Button("Queue", variant="success", classes="btn-add")
-                            # Closure capture
-                            btn.url = url
-                            btn.title = title
-                            row.mount(btn)
                             results_container.mount(row)
 
                     self.app.call_from_thread(display_results)
@@ -977,6 +1009,18 @@ class YtDlpTUI(App):
     }
     .result-info { width: 1fr; }
     .btn-add { width: 12; }
+
+    #queue-list, #history-list { height: 1fr; }
+    .queue-item { border-bottom: solid $secondary; padding: 1; margin-bottom: 1; }
+    .history-item-row {
+        height: auto;
+        border-bottom: solid $secondary;
+        margin-bottom: 1;
+        padding-bottom: 1;
+    }
+    .history-info { width: 1fr; }
+    .btn-copy-error { width: 15; }
+    #btn-copy-preview { width: 15; margin-left: 2; height: 1; }
     """
 
     def __init__(self) -> None:
@@ -1058,10 +1102,14 @@ class YtDlpTUI(App):
             )
 
             assert proc.stdout is not None
+            error_lines = []
             for raw_line in proc.stdout:
                 line = raw_line.rstrip()
                 if not line:
                     continue
+
+                if "ERROR:" in line or "error" in line.lower():
+                    error_lines.append(line)
 
                 # Try to parse progress:
                 # [download]  10.2% of 15.34MiB at 10.04MiB/s ETA 00:01
@@ -1090,12 +1138,18 @@ class YtDlpTUI(App):
                 )
             else:
                 task.status = "failed"
+                task.error_msg = (
+                    " ".join(error_lines[-2:])
+                    if error_lines
+                    else f"Exit code {proc.returncode}"
+                )
                 self.notify_desktop(
                     "Download Failed",
-                    f"Error code {proc.returncode} for: {task.title or task.url}",
+                    f"Error: {task.error_msg} for: {task.title or task.url}",
                 )
         except Exception as e:
             task.status = "failed"
+            task.error_msg = str(e)
             self.notify_desktop("Download Error", f"Unexpected error: {str(e)}")
 
         # Move to history and remove from queue
