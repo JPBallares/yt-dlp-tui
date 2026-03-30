@@ -524,6 +524,15 @@ class ConfigScreen(Screen):
             yield Label("Download Rate Limit (e.g., 50K, 1M):")
             yield Input(placeholder="50K or 1M", id="limit-rate")
 
+            yield Label("Playlist Mode:")
+            with RadioSet(id="playlist-mode-select"):
+                yield RadioButton("Default", id=_radio_id("playlist", "default"))
+                yield RadioButton("Force Playlist", id=_radio_id("playlist", "yes"))
+                yield RadioButton("Single Video Only", id=_radio_id("playlist", "no"))
+
+            yield Label("Playlist Items (e.g., 1,2,5-10):")
+            yield Input(placeholder="1,2,5-10", id="playlist-items")
+
             with Horizontal(classes="switch-row"):
                 yield Label("Extract Audio Only:")
                 yield Switch(id="extract-audio")
@@ -592,6 +601,14 @@ class ConfigScreen(Screen):
         self.query_one("#sub-langs", Input).value = self.config.download.sub_langs
         self.query_one("#custom-args", Input).value = self.config.download.custom_args
         self.query_one("#limit-rate", Input).value = self.config.download.limit_rate
+        _select_key(
+            self.query_one("#playlist-mode-select", RadioSet),
+            "playlist",
+            self.config.download.playlist_mode,
+        )
+        self.query_one(
+            "#playlist-items", Input
+        ).value = self.config.download.playlist_items
         self.query_one(
             "#extract-audio", Switch
         ).value = self.config.download.extract_audio
@@ -654,6 +671,13 @@ class ConfigScreen(Screen):
         self.config.download.sub_langs = self.query_one("#sub-langs", Input).value
         self.config.download.custom_args = self.query_one("#custom-args", Input).value
         self.config.download.limit_rate = self.query_one("#limit-rate", Input).value
+        self.config.download.playlist_mode = (
+            _selected_key(self.query_one("#playlist-mode-select", RadioSet), "playlist")
+            or "default"
+        )
+        self.config.download.playlist_items = self.query_one(
+            "#playlist-items", Input
+        ).value
         self.config.download.extract_audio = self.query_one(
             "#extract-audio", Switch
         ).value

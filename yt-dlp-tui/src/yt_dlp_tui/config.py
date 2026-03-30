@@ -69,6 +69,8 @@ class DownloadSettings:
     sponsorblock_remove: bool = False
     custom_args: str = ""
     limit_rate: str = ""
+    playlist_mode: str = "default"
+    playlist_items: str = ""
 
 
 @dataclass
@@ -181,6 +183,15 @@ class Config:
         # Rate limiting
         if self.download.limit_rate:
             args.extend(["--limit-rate", self.download.limit_rate])
+
+        # Playlist controls
+        if self.download.playlist_mode == "yes":
+            args.append("--yes-playlist")
+        elif self.download.playlist_mode == "no":
+            args.append("--no-playlist")
+
+        if self.download.playlist_items:
+            args.extend(["--playlist-items", self.download.playlist_items])
 
         # External downloader
         if self.download.use_aria2c:
