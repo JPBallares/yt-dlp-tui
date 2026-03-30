@@ -30,6 +30,11 @@ CODECS = ["h264", "h265", "vp9", "none"]
 AUDIO_FORMATS = ["mp3", "flac", "m4a", "wav", "opus"]
 ARIA2_CONNECTIONS = ["4", "8", "16"]
 MAX_PARALLEL_OPTIONS = ["1", "2", "3", "4", "5"]
+SEARCH_PROVIDERS = {
+    "YouTube": "ytsearch",
+    "SoundCloud": "scsearch",
+    "Google Video": "gvsearch",
+}
 
 QUALITY_FORMAT_MAP = {
     "best": "bv*+ba/b",

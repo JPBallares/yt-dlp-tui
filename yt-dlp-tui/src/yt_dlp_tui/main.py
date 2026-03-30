@@ -30,6 +30,7 @@ from .config import (
     CONTAINERS,
     MAX_PARALLEL_OPTIONS,
     QUALITIES,
+    SEARCH_PROVIDERS,
     Config,
 )
 
@@ -161,7 +162,13 @@ class MainScreen(Screen):
         def _fetch() -> None:
             try:
                 # Use --dump-json to get metadata without downloading
-                cmd = ["yt-dlp", "--dump-json", "--simulate", url]
+                cmd = [
+                    "yt-dlp",
+                    "--dump-json",
+                    "--simulate",
+                    "--no-cache-dir",
+                    url,
+                ]
                 # Pass cookies if configured
                 if self.config.cookie.mode == "browser":
                     cmd.extend(["--cookies-from-browser", self.config.cookie.browser])
@@ -290,8 +297,9 @@ class QueueScreen(Screen):
         queue_list = self.query_one("#queue-list", Static)
         history_list = self.query_one("#history-list", Static)
 
-        queue = self.app.download_queue
-        history = self.app.history
+        # Work on copies to avoid "list changed size during iteration" errors
+        queue = list(self.app.download_queue)
+        history = list(self.app.history)
 
         if not queue:
             queue_list.update("No active downloads")
@@ -367,9 +375,16 @@ class SearchScreen(Screen):
                 yield Label("Search Videos", classes="title")
                 yield Button("Back", id="btn-back")
             with VerticalScroll(id="main-content"):
+                yield Label("Search Provider:")
+                with RadioSet(id="search-provider-select"):
+                    for i, (label, provider) in enumerate(SEARCH_PROVIDERS.items()):
+                        yield RadioButton(
+                            label, id=_radio_id("sp", provider), value=(i == 0)
+                        )
+
                 yield Label("Search Query:")
                 with Horizontal(id="search-row"):
-                    yield Input(placeholder="Search YouTube...", id="search-input")
+                    yield Input(placeholder="Search...", id="search-input")
                     yield Button("Search", id="btn-do-search", variant="primary")
                 yield Static("", id="search-status")
                 yield VerticalScroll(id="search-results")
@@ -388,16 +403,27 @@ class SearchScreen(Screen):
         if not query:
             return
 
+        provider = (
+            _selected_key(self.query_one("#search-provider-select", RadioSet), "sp")
+            or "ytsearch"
+        )
+
         status = self.query_one("#search-status", Static)
         results_container = self.query_one("#search-results", VerticalScroll)
 
-        status.update("Searching...")
+        status.update(f"Searching {provider}...")
         results_container.remove_children()
 
         def _search() -> None:
             try:
                 # Search top 10 results
-                cmd = ["yt-dlp", "--dump-json", "--simulate", f"ytsearch10:{query}"]
+                cmd = [
+                    "yt-dlp",
+                    "--dump-json",
+                    "--simulate",
+                    "--no-cache-dir",
+                    f"{provider}10:{query}",
+                ]
                 # Pass cookies if configured
                 if self.config.cookie.mode == "browser":
                     cmd.extend(["--cookies-from-browser", self.config.cookie.browser])
@@ -407,7 +433,14 @@ class SearchScreen(Screen):
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                 )
-                stdout, stderr = proc.communicate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    self.app.call_from_thread(
+                        status.update, "Search timed out (slow connection or captcha)."
+                    )
+                    return
 
                 if proc.returncode == 0:
                     lines = stdout.strip().split("\n")
@@ -934,9 +967,11 @@ class YtDlpTUI(App):
 
     #search-row { height: 3; margin-bottom: 1; }
     #search-input { width: 1fr; }
+    #search-provider-select { height: 3; margin-bottom: 1; layout: horizontal; }
+    #search-provider-select RadioButton { width: 1fr; }
     .search-result-item {
         height: 4;
-        border-bottom: thin $secondary;
+        border-bottom: solid $secondary;
         margin-bottom: 1;
         padding-bottom: 1;
     }
