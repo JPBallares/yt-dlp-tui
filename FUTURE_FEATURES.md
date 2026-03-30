@@ -21,7 +21,7 @@ This document tracks potential features and enhancements for the `ytdownloads` p
 ## 🔴 High Complexity / Polished Experience
 
 - [x] **Metadata Preview**: Fetch and display title, uploader, and duration *before* starting the download.
-- [ ] **Parallel Downloads**: Ability to download multiple items from the queue simultaneously.
+- [x] **Parallel Downloads**: Ability to download multiple items from the queue simultaneously.
 - [x] **Desktop Notifications**: System-level alerts when long downloads or conversions finish.
 - [ ] **TUI Theming**: Custom color schemes and light/dark mode support using Textual features.
 - [ ] **Auto-Update**: A mechanism to check for and apply updates to `yt-dlp` itself.

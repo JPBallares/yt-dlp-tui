@@ -29,6 +29,7 @@ CONTAINERS = ["best", "mkv", "mp4", "webm"]
 CODECS = ["h264", "h265", "vp9", "none"]
 AUDIO_FORMATS = ["mp3", "flac", "m4a", "wav", "opus"]
 ARIA2_CONNECTIONS = ["4", "8", "16"]
+MAX_PARALLEL_OPTIONS = ["1", "2", "3", "4", "5"]
 
 QUALITY_FORMAT_MAP = {
     "best": "bv*+ba/b",
@@ -92,6 +93,7 @@ class DownloadSettings:
     limit_rate: str = ""
     playlist_mode: str = "default"
     playlist_items: str = ""
+    max_parallel_downloads: int = 1
 
 
 @dataclass

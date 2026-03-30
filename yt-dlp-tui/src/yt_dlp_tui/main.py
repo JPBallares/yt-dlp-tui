@@ -28,6 +28,7 @@ from .config import (
     BROWSERS,
     CODECS,
     CONTAINERS,
+    MAX_PARALLEL_OPTIONS,
     QUALITIES,
     Config,
 )
@@ -718,6 +719,11 @@ class ConfigScreen(Screen):
             yield Label("Playlist Items (e.g., 1,2,5-10):")
             yield Input(placeholder="1,2,5-10", id="playlist-items")
 
+            yield Label("Max Parallel Downloads:")
+            with RadioSet(id="parallel-downloads-select"):
+                for opt in MAX_PARALLEL_OPTIONS:
+                    yield RadioButton(opt, id=_radio_id("parallel", opt))
+
             with Horizontal(classes="switch-row"):
                 yield Label("Extract Audio Only:")
                 yield Switch(id="extract-audio")
@@ -794,6 +800,11 @@ class ConfigScreen(Screen):
         self.query_one(
             "#playlist-items", Input
         ).value = self.config.download.playlist_items
+        _select_key(
+            self.query_one("#parallel-downloads-select", RadioSet),
+            "parallel",
+            str(self.config.download.max_parallel_downloads),
+        )
         self.query_one(
             "#extract-audio", Switch
         ).value = self.config.download.extract_audio
@@ -863,6 +874,12 @@ class ConfigScreen(Screen):
         self.config.download.playlist_items = self.query_one(
             "#playlist-items", Input
         ).value
+        self.config.download.max_parallel_downloads = int(
+            _selected_key(
+                self.query_one("#parallel-downloads-select", RadioSet), "parallel"
+            )
+            or "1"
+        )
         self.config.download.extract_audio = self.query_one(
             "#extract-audio", Switch
         ).value
@@ -932,8 +949,7 @@ class YtDlpTUI(App):
         self.config = Config.load()
         self.download_queue = []
         self.history = Config.load_history()
-        self._worker_thread = None
-        self._current_task = None
+        self._manager_thread = None
 
     def notify_desktop(self, title: str, message: str) -> None:
         """Send a desktop notification if enabled in config."""
@@ -949,105 +965,113 @@ class YtDlpTUI(App):
 
     def on_mount(self) -> None:
         self.push_screen(MainScreen(self.config))
-        self._start_worker()
+        self._start_manager()
 
     def add_task(self, task) -> None:
         self.download_queue.append(task)
-        if not self._worker_thread or not self._worker_thread.is_alive():
-            self._start_worker()
+        if not self._manager_thread or not self._manager_thread.is_alive():
+            self._start_manager()
 
-    def _start_worker(self) -> None:
-        if self._worker_thread and self._worker_thread.is_alive():
+    def _start_manager(self) -> None:
+        if self._manager_thread and self._manager_thread.is_alive():
             return
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker_thread.start()
+        self._manager_thread = threading.Thread(target=self._manager_loop, daemon=True)
+        self._manager_thread.start()
 
-    def _worker_loop(self) -> None:
-        import re
+    def _manager_loop(self) -> None:
         import time
 
         while True:
-            # Find next queued task
-            task = None
-            # Copy list to avoid thread safety issues while iterating
-            for t in list(self.download_queue):
-                if t.status == "queued":
-                    task = t
-                    break
-
-            if not task:
-                # No more tasks, wait a bit
-                time.sleep(2)
-                continue
-
-            self._current_task = task
-            task.status = "downloading"
-
-            self.notify_desktop(
-                "Download Started", f"Processing: {task.title or task.url}"
+            # Count currently downloading tasks
+            active_count = sum(
+                1 for t in self.download_queue if t.status == "downloading"
             )
 
-            cmd = self.config.build_cli_args(task.url)
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
+            if active_count < self.config.download.max_parallel_downloads:
+                # Find next queued task
+                task = None
+                for t in list(self.download_queue):
+                    if t.status == "queued":
+                        task = t
+                        break
+
+                if task:
+                    task.status = "downloading"
+                    threading.Thread(
+                        target=self._download_worker, args=(task,), daemon=True
+                    ).start()
+                    # Small delay to avoid spawning too many processes at once
+                    time.sleep(0.5)
+                    continue
+
+            # No more tasks or limit reached, wait a bit
+            time.sleep(1)
+
+    def _download_worker(self, task) -> None:
+        import re
+
+        self.notify_desktop("Download Started", f"Processing: {task.title or task.url}")
+
+        cmd = self.config.build_cli_args(task.url)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+
+            assert proc.stdout is not None
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip()
+                if not line:
+                    continue
+
+                # Try to parse progress:
+                # [download]  10.2% of 15.34MiB at 10.04MiB/s ETA 00:01
+                if "[download]" in line and "%" in line:
+                    # Extract progress %
+                    prog_match = re.search(r"(\d+\.\d+)%", line)
+                    if prog_match:
+                        task.progress = prog_match.group(0)
+
+                    # Extract speed
+                    speed_match = re.search(r"at\s+([^\s]+)", line)
+                    if speed_match:
+                        task.speed = speed_match.group(1)
+
+                    # Extract ETA
+                    eta_match = re.search(r"ETA\s+([^\s]+)", line)
+                    if eta_match:
+                        task.eta = eta_match.group(1)
+
+            proc.wait()
+            if proc.returncode == 0:
+                task.status = "finished"
+                self.notify_desktop(
+                    "Download Finished",
+                    f"Successfully downloaded: {task.title or task.url}",
                 )
-
-                assert proc.stdout is not None
-                for raw_line in proc.stdout:
-                    line = raw_line.rstrip()
-                    if not line:
-                        continue
-
-                    # Try to parse progress:
-                    # [download]  10.2% of 15.34MiB at 10.04MiB/s ETA 00:01
-                    if "[download]" in line and "%" in line:
-                        # Extract progress %
-                        prog_match = re.search(r"(\d+\.\d+)%", line)
-                        if prog_match:
-                            task.progress = prog_match.group(0)
-
-                        # Extract speed
-                        speed_match = re.search(r"at\s+([^\s]+)", line)
-                        if speed_match:
-                            task.speed = speed_match.group(1)
-
-                        # Extract ETA
-                        eta_match = re.search(r"ETA\s+([^\s]+)", line)
-                        if eta_match:
-                            task.eta = eta_match.group(1)
-
-                proc.wait()
-                if proc.returncode == 0:
-                    task.status = "finished"
-                    self.notify_desktop(
-                        "Download Finished",
-                        f"Successfully downloaded: {task.title or task.url}",
-                    )
-                else:
-                    task.status = "failed"
-                    self.notify_desktop(
-                        "Download Failed",
-                        f"Error code {proc.returncode} for: {task.title or task.url}",
-                    )
-            except Exception as e:
+            else:
                 task.status = "failed"
-                self.notify_desktop("Download Error", f"Unexpected error: {str(e)}")
+                self.notify_desktop(
+                    "Download Failed",
+                    f"Error code {proc.returncode} for: {task.title or task.url}",
+                )
+        except Exception as e:
+            task.status = "failed"
+            self.notify_desktop("Download Error", f"Unexpected error: {str(e)}")
 
-            # Move to history and remove from queue
-            self.history.append(task)
-            if task in self.download_queue:
-                self.download_queue.remove(task)
+        # Move to history and remove from queue
+        self.history.append(task)
+        if task in self.download_queue:
+            self.download_queue.remove(task)
 
-            # Save history to disk
-            from .config import Config
+        # Save history to disk
+        from .config import Config
 
-            Config.save_history(self.history)
-            self._current_task = None
+        Config.save_history(self.history)
 
 
 def run() -> None:
