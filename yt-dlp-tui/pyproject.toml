@@ -8,6 +8,7 @@ dependencies = [
     "textual>=0.50.0",
     "platformdirs>=4.0.0",
     "toml>=0.10.0",
+    "plyer>=2.1.0",
 ]
 
 [project.scripts]
