@@ -518,6 +518,9 @@ class ConfigScreen(Screen):
             yield Label("Subtitle Languages (e.g., en,es or en.*):")
             yield Input(id="sub-langs")
 
+            yield Label("Custom yt-dlp Arguments (advanced):")
+            yield Input(placeholder="--proxy URL --limit-rate 1M", id="custom-args")
+
             with Horizontal(classes="switch-row"):
                 yield Label("Extract Audio Only:")
                 yield Switch(id="extract-audio")
@@ -584,6 +587,7 @@ class ConfigScreen(Screen):
             "#sponsorblock-remove", Switch
         ).value = self.config.download.sponsorblock_remove
         self.query_one("#sub-langs", Input).value = self.config.download.sub_langs
+        self.query_one("#custom-args", Input).value = self.config.download.custom_args
         self.query_one(
             "#extract-audio", Switch
         ).value = self.config.download.extract_audio
@@ -644,6 +648,7 @@ class ConfigScreen(Screen):
             "#sponsorblock-remove", Switch
         ).value
         self.config.download.sub_langs = self.query_one("#sub-langs", Input).value
+        self.config.download.custom_args = self.query_one("#custom-args", Input).value
         self.config.download.extract_audio = self.query_one(
             "#extract-audio", Switch
         ).value

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import shutil
 import tomllib
 from dataclasses import asdict, dataclass, field
@@ -66,6 +67,7 @@ class DownloadSettings:
     write_auto_subs: bool = False
     sub_langs: str = "en.*"
     sponsorblock_remove: bool = False
+    custom_args: str = ""
 
 
 @dataclass
@@ -167,6 +169,13 @@ class Config:
         # SponsorBlock
         if self.download.sponsorblock_remove:
             args.extend(["--sponsorblock-remove", "all"])
+
+        # Custom arguments
+        if self.download.custom_args:
+            try:
+                args.extend(shlex.split(self.download.custom_args))
+            except Exception:
+                pass  # Ignore invalid custom args
 
         # External downloader
         if self.download.use_aria2c:
