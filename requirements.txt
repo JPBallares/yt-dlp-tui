@@ -21,7 +21,7 @@ websockets==16.0
 yt-dlp @ https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz
 yt-dlp-apple-webkit-jsi==0.1.1
 yt-dlp-ejs==0.8.0
--e file:///Volumes/WD_BLACK_DEV/users/jpballares/ytdownloads/yt-dlp-tui
+-e ./yt-dlp-tui
 
 # Linting & Formatting
 ruff>=0.4.0
