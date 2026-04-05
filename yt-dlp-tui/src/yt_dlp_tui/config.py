@@ -181,12 +181,18 @@ class Config:
         # Sections & Splitting
         if download_sections:
             args.extend(["--download-sections", download_sections])
+            # Hide ffmpeg verbosity to not flood log
+            args.extend(["--downloader-args", "ffmpeg_i:-loglevel error"])
         if split_chapters:
             args.append("--split-chapters")
+            args.extend(["--downloader-args", "ffmpeg_i:-loglevel error"])
             # For splitting chapters, we might want to use the section title in filename
             # But the current template is fixed.
             # If splitting, yt-dlp automatically modifies filenames if not using
             # specific templates.
+
+        # Ensure progress is shown even for external downloaders/sections
+        args.append("--progress")
 
         # Container merge
         if self.format.container != "best":

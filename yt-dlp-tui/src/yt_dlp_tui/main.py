@@ -1141,19 +1141,23 @@ class YtDlpTUI(App):
 
                 # Try to parse progress:
                 # [download]  10.2% of 15.34MiB at 10.04MiB/s ETA 00:01
-                if "[download]" in line and "%" in line:
+                # [aria2c] 1.2MiB/20MiB(6%) CN:8 DL:2MiB ETA:5s
+                if ("[" in line and "%" in line) or "ETA" in line:
                     # Extract progress %
-                    prog_match = re.search(r"(\d+\.\d+)%", line)
+                    # Handles 10.2% or (6%)
+                    prog_match = re.search(r"(\d+\.?\d*)%", line)
                     if prog_match:
                         task.progress = prog_match.group(0)
 
                     # Extract speed
-                    speed_match = re.search(r"at\s+([^\s]+)", line)
+                    # Handles 'at 10.04MiB/s' (yt-dlp) or 'DL:2MiB' (aria2c)
+                    speed_match = re.search(r"(?:at|DL:)\s*([^\s]+)", line)
                     if speed_match:
                         task.speed = speed_match.group(1)
 
                     # Extract ETA
-                    eta_match = re.search(r"ETA\s+([^\s]+)", line)
+                    # Handles 'ETA 00:01' or 'ETA:5s'
+                    eta_match = re.search(r"ETA:?\s*([^\s]+)", line)
                     if eta_match:
                         task.eta = eta_match.group(1)
 
