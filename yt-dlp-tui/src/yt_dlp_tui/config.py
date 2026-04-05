@@ -57,6 +57,8 @@ class DownloadTask:
     speed: str = ""
     error_msg: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    download_sections: str = ""
+    split_chapters: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -100,6 +102,7 @@ class DownloadSettings:
     playlist_mode: str = "default"
     playlist_items: str = ""
     max_parallel_downloads: int = 1
+    split_chapters: bool = False
 
 
 @dataclass
@@ -157,7 +160,7 @@ class Config:
         except Exception:
             return []
 
-    def build_cli_args(self, url: str) -> list[str]:
+    def build_cli_args(self, url: str, task: DownloadTask | None = None) -> list[str]:
         """Build the yt-dlp CLI argument list from config."""
         yt_dlp_bin = shutil.which("yt-dlp")
         if not yt_dlp_bin:
@@ -167,9 +170,23 @@ class Config:
 
         args: list[str] = [yt_dlp_bin]
 
+        # Use task settings if provided, otherwise fallback to defaults
+        split_chapters = task.split_chapters if task else self.download.split_chapters
+        download_sections = task.download_sections if task else ""
+
         # Format
         fmt = self._build_format_string()
         args.extend(["-f", fmt])
+
+        # Sections & Splitting
+        if download_sections:
+            args.extend(["--download-sections", download_sections])
+        if split_chapters:
+            args.append("--split-chapters")
+            # For splitting chapters, we might want to use the section title in filename
+            # But the current template is fixed.
+            # If splitting, yt-dlp automatically modifies filenames if not using
+            # specific templates.
 
         # Container merge
         if self.format.container != "best":

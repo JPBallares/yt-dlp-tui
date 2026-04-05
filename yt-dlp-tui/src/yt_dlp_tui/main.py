@@ -104,6 +104,13 @@ class MainScreen(Screen):
                         )
                     yield Static("", id="preview-details")
 
+                with Horizontal(classes="options-row"):
+                    yield Label("Sections (e.g. *00:01:00-00:02:00):")
+                    yield Input(placeholder="*START-END", id="sections-input")
+                with Horizontal(classes="options-row"):
+                    yield Label("Split by Chapters:")
+                    yield Switch(id="split-chapters-main")
+
                 yield Button("Add to Queue", id="btn-start", variant="success")
                 yield Static("", id="status-line")
                 yield Static("", id="output-log")
@@ -123,6 +130,9 @@ class MainScreen(Screen):
 
     def on_mount(self) -> None:
         self.update_config_summary()
+        self.query_one("#split-chapters-main", Switch).value = (
+            self.config.download.split_chapters
+        )
 
     def on_screen_resume(self) -> None:
         self.update_config_summary()
@@ -256,7 +266,11 @@ class MainScreen(Screen):
 
         from .config import DownloadTask
 
-        task = DownloadTask(url=url)
+        task = DownloadTask(
+            url=url,
+            download_sections=self.query_one("#sections-input", Input).value.strip(),
+            split_chapters=self.query_one("#split-chapters-main", Switch).value,
+        )
         # If we have preview data, use it
         details = self.query_one("#preview-details", Static)
         preview_area = self.query_one("#preview-area", VerticalScroll)
@@ -269,6 +283,7 @@ class MainScreen(Screen):
 
         self.app.add_task(task)
         url_input.value = ""
+        self.query_one("#sections-input", Input).value = ""
         # Hide preview area
         self.query_one("#preview-area", VerticalScroll).add_class("hidden")
         self.query_one("#status-line", Static).update(f"Added to queue: {task.url}")
@@ -766,6 +781,10 @@ class ConfigScreen(Screen):
                 yield Label("SponsorBlock (remove segments):")
                 yield Switch(id="sponsorblock-remove")
 
+            with Horizontal(classes="switch-row"):
+                yield Label("Split by Chapters (all):")
+                yield Switch(id="split-chapters-config")
+
             yield Label("Subtitle Languages (e.g., en,es or en.*):")
             yield Input(id="sub-langs")
 
@@ -854,6 +873,9 @@ class ConfigScreen(Screen):
         self.query_one(
             "#sponsorblock-remove", Switch
         ).value = self.config.download.sponsorblock_remove
+        self.query_one(
+            "#split-chapters-config", Switch
+        ).value = self.config.download.split_chapters
         self.query_one("#sub-langs", Input).value = self.config.download.sub_langs
         self.query_one("#custom-args", Input).value = self.config.download.custom_args
         self.query_one("#limit-rate", Input).value = self.config.download.limit_rate
@@ -929,6 +951,9 @@ class ConfigScreen(Screen):
         self.config.download.sponsorblock_remove = self.query_one(
             "#sponsorblock-remove", Switch
         ).value
+        self.config.download.split_chapters = self.query_one(
+            "#split-chapters-config", Switch
+        ).value
         self.config.download.sub_langs = self.query_one("#sub-langs", Input).value
         self.config.download.custom_args = self.query_one("#custom-args", Input).value
         self.config.download.limit_rate = self.query_one("#limit-rate", Input).value
@@ -992,6 +1017,9 @@ class YtDlpTUI(App):
     .config-summary { margin-top: 2; border: solid $secondary; padding: 1; }
     .hidden { display: none; }
     .switch-row { height: 3; }
+    .options-row { height: 3; margin-bottom: 1; }
+    .options-row Label { width: 1fr; }
+    .options-row Input { width: 2fr; }
     RadioSet { margin-bottom: 1; }
     Input { margin-bottom: 1; }
     #status-line { margin-top: 1; }
@@ -1091,7 +1119,7 @@ class YtDlpTUI(App):
 
         self.notify_desktop("Download Started", f"Processing: {task.title or task.url}")
 
-        cmd = self.config.build_cli_args(task.url)
+        cmd = self.config.build_cli_args(task.url, task=task)
         try:
             proc = subprocess.Popen(
                 cmd,
