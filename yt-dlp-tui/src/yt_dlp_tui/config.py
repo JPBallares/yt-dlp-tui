@@ -26,7 +26,8 @@ BROWSERS = [
 ]
 QUALITIES = ["best", "1080p", "720p", "480p", "360p", "audio"]
 CONTAINERS = ["best", "mkv", "mp4", "webm"]
-CODECS = ["h264", "h265", "vp9", "none"]
+CONTAINER_CHOICES = ["mp4", "mkv", "webm"]
+CODECS = ["default", "h264", "h265", "vp9", "av1", "none"]
 AUDIO_FORMATS = ["mp3", "flac", "m4a", "wav", "opus"]
 ARIA2_CONNECTIONS = ["4", "8", "16"]
 MAX_PARALLEL_OPTIONS = ["1", "2", "3", "4", "5"]
@@ -59,6 +60,8 @@ class DownloadTask:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     download_sections: str = ""
     split_chapters: bool = False
+    container: str = ""  # per-task override (empty = use global)
+    codec: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -79,7 +82,7 @@ class CookieSettings:
 class FormatSettings:
     quality: str = "best"
     container: str = "mp4"
-    codec: str = "none"
+    codec: str = "default"
 
 
 @dataclass
@@ -164,8 +167,6 @@ class Config:
         """Build the yt-dlp CLI argument list from config."""
         yt_dlp_bin = shutil.which("yt-dlp")
         if not yt_dlp_bin:
-            # Fallback to current executable's directory if it's a script
-            # or just 'yt-dlp'
             yt_dlp_bin = "yt-dlp"
 
         args: list[str] = [yt_dlp_bin]
@@ -173,9 +174,11 @@ class Config:
         # Use task settings if provided, otherwise fallback to defaults
         split_chapters = task.split_chapters if task else self.download.split_chapters
         download_sections = task.download_sections if task else ""
+        container = task.container if task and task.container else self.format.container
+        codec = task.codec if task and task.codec else self.format.codec
 
         # Format
-        fmt = self._build_format_string()
+        fmt = self._build_format_string(container=container, codec=codec)
         args.extend(["-f", fmt])
 
         # Sections & Splitting
@@ -195,28 +198,34 @@ class Config:
         args.append("--progress")
 
         # Container merge
-        if self.format.container != "best":
-            args.extend(["--merge-output-format", self.format.container])
+        if container != "best":
+            args.extend(["--merge-output-format", container])
 
         # Recode if a specific codec is requested
-        if self.format.codec != "none":
+        if codec not in ("none", "default"):
             recode_map = {
                 "h264": "mp4",
                 "h265": "mp4",
                 "vp9": "webm",
+                "av1": "mp4",
             }
-            target = recode_map.get(self.format.codec)
+            target = recode_map.get(codec)
             if target:
                 args.extend(["--recode-video", target])
-                # Ensure h265 uses correct encoder if requested
-                if self.format.codec == "h265":
+                if codec == "h265":
                     args.extend(["--postprocessor-args", "ffmpeg:-c:v libx265"])
-                elif self.format.codec == "h264":
-                    # Optionally force slow/crf 22 for h264 as well if desired
+                elif codec == "h264":
                     args.extend(
                         [
                             "--postprocessor-args",
                             "ffmpeg:-c:v libx264 -preset slow -crf 22",
+                        ]
+                    )
+                elif codec == "av1":
+                    args.extend(
+                        [
+                            "--postprocessor-args",
+                            "ffmpeg:-c:v libaom-av1 -crf 30 -cpu-used 4",
                         ]
                     )
 
@@ -246,7 +255,7 @@ class Config:
         if self.download.embed_subs:
             args.append("--embed-subs")
             # For MP4 compatibility, we might need to convert subs
-            if self.format.container == "mp4":
+            if container == "mp4":
                 args.extend(["--convert-subs", "srt"])
         if self.download.write_auto_subs:
             args.append("--write-auto-subs")
@@ -298,29 +307,34 @@ class Config:
         args.append(url)
         return args
 
-    def _build_format_string(self) -> str:
-        base_selector = QUALITY_FORMAT_MAP.get(self.format.quality, "bv*+ba/b")
+    def _build_format_string(self, container: str = "", codec: str = "") -> str:
+        quality = self.format.quality
+        container = container or self.format.container
+        codec = codec or self.format.codec
+
+        base_selector = QUALITY_FORMAT_MAP.get(quality, "bv*+ba/b")
 
         # If codec is h264, prefer it natively
-        if self.format.codec == "h264":
-            # Prefer avc1+mp4a (native h264/aac)
+        if codec == "h264":
             h264_selector = base_selector.replace("bv*", "bv*[vcodec^=avc1]").replace(
                 "ba", "ba[acodec^=mp4a]"
             )
-            # Fallback to base selector if not found
             return f"{h264_selector}/{base_selector}"
 
-        if self.format.codec == "vp9":
-            # Prefer vp9
+        if codec == "vp9":
             vp9_selector = base_selector.replace("bv*", "bv*[vcodec^=vp09]")
             return f"{vp9_selector}/{base_selector}"
 
+        if codec == "av1":
+            av1_selector = base_selector.replace("bv*", "bv*[vcodec^=av01]")
+            return f"{av1_selector}/{base_selector}"
+
         # Otherwise just return the base selector, possibly with container filters
         fmt = base_selector
-        if self.format.container == "mp4":
+        if container == "mp4":
             fmt = fmt.replace("bv*", "bv*[ext=mp4]").replace("ba", "ba[ext=m4a]")
-        elif self.format.container in ("mkv", "webm"):
-            ext = self.format.container
+        elif container in ("mkv", "webm"):
+            ext = container
             fmt = fmt.replace("bv*", f"bv*[ext={ext}]").replace("ba", f"ba[ext={ext}]")
 
         return fmt

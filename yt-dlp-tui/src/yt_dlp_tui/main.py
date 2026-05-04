@@ -9,7 +9,7 @@ from plyer import notification
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -28,6 +28,7 @@ from .config import (
     AUDIO_FORMATS,
     BROWSERS,
     CODECS,
+    CONTAINER_CHOICES,
     CONTAINERS,
     MAX_PARALLEL_OPTIONS,
     QUALITIES,
@@ -57,6 +58,13 @@ def _select_key(rs: RadioSet, prefix: str, key: str) -> None:
         if btn.id == target_id:
             btn.value = True
             return
+
+
+def _find_btn(rs: RadioSet, btn_id: str) -> RadioButton | None:
+    for btn in rs.query(RadioButton):
+        if btn.id == btn_id:
+            return btn
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +103,7 @@ class MainScreen(Screen):
                         id="url-input",
                     )
                     yield Button("Fetch Info", id="btn-fetch", variant="primary")
+                    yield Button("Add to Queue", id="btn-start", variant="success")
 
                 with VerticalScroll(id="preview-area", classes="hidden"):
                     with Horizontal():
@@ -111,9 +120,24 @@ class MainScreen(Screen):
                     yield Label("Split by Chapters:")
                     yield Switch(id="split-chapters-main")
 
-                yield Button("Add to Queue", id="btn-start", variant="success")
+                with Horizontal(classes="format-row"):
+                    with Vertical(id="container-col"):
+                        yield Label("Container:")
+                        with RadioSet(id="container-select"):
+                            for c in CONTAINER_CHOICES:
+                                yield RadioButton(c, id=_radio_id("c", c))
+                    with Vertical(id="codec-col"):
+                        yield Label("Codec:")
+                        with RadioSet(id="codec-select"):
+                            for codec in CODECS:
+                                yield RadioButton(codec, id=_radio_id("codec", codec))
+
                 yield Static("", id="status-line")
                 yield Static("", id="output-log")
+
+                with VerticalScroll(id="formats-area", classes="hidden"):
+                    yield Label("Available Formats:", classes="section-title")
+                    yield Static("", id="formats-list")
         yield Footer()
 
     def update_config_summary(self) -> None:
@@ -130,9 +154,9 @@ class MainScreen(Screen):
 
     def on_mount(self) -> None:
         self.update_config_summary()
-        self.query_one("#split-chapters-main", Switch).value = (
-            self.config.download.split_chapters
-        )
+        self.query_one(
+            "#split-chapters-main", Switch
+        ).value = self.config.download.split_chapters
 
     def on_screen_resume(self) -> None:
         self.update_config_summary()
@@ -176,15 +200,14 @@ class MainScreen(Screen):
 
         def _fetch() -> None:
             try:
-                # Use --dump-json to get metadata without downloading
                 cmd = [
                     "yt-dlp",
                     "--dump-json",
                     "--simulate",
                     "--no-cache-dir",
+                    "--quiet",
                     url,
                 ]
-                # Pass cookies if configured
                 if self.config.cookie.mode == "browser":
                     cmd.extend(["--cookies-from-browser", self.config.cookie.browser])
                 elif self.config.cookie.mode == "file" and self.config.cookie.file_path:
@@ -193,7 +216,12 @@ class MainScreen(Screen):
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                 )
-                stdout, stderr = proc.communicate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    self.app.call_from_thread(status.update, "Fetch timed out")
+                    return
 
                 if proc.returncode == 0:
                     data = json.loads(stdout)
@@ -203,14 +231,12 @@ class MainScreen(Screen):
                     views = data.get("view_count", 0)
                     upload_date = data.get("upload_date", "Unknown")
 
-                    # Format duration
                     m, s = divmod(duration_sec, 60)
                     h, m = divmod(m, 60)
                     dur_str = (
                         f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
                     )
 
-                    # Format view count
                     if views >= 1_000_000:
                         view_str = f"{views / 1_000_000:.1f}M"
                     elif views >= 1_000:
@@ -218,7 +244,6 @@ class MainScreen(Screen):
                     else:
                         view_str = str(views)
 
-                    # Format date (YYYYMMDD to YYYY-MM-DD)
                     if len(upload_date) == 8:
                         date_str = (
                             f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
@@ -232,12 +257,125 @@ class MainScreen(Screen):
                         f"Duration: {dur_str} | Views: {view_str} | Date: {date_str}"
                     )
 
+                    # Build format list from JSON
+                    formats = data.get("formats", [])
+                    format_lines = []
+                    containers = set()
+                    codecs = set()
+
+                    # Header
+                    header = (
+                        f"{'ID':<6} {'EXT':<6} {'RES':<12} {'FPS':<5} "
+                        f"{'VCODEC':<16} {'ACODEC':<14} {'SIZE':<10} {'BR':<8}"
+                    )
+                    format_lines.append(header)
+                    format_lines.append("-" * len(header))
+
+                    for f in formats:
+                        fmt_id = str(f.get("format_id", "?"))[:6]
+                        ext = str(f.get("ext", "?"))[:6]
+                        res = str(f.get("resolution", "audio"))[:12]
+                        fps = str(f.get("fps", "-"))[:5] if f.get("fps") else "-"
+                        vcodec = str(f.get("vcodec", "none"))[:16]
+                        acodec = str(f.get("acodec", "none"))[:14]
+
+                        # Filesize / filesize_approx
+                        fs = f.get("filesize") or f.get("filesize_approx")
+                        if fs:
+                            for unit in ["B", "KiB", "MiB", "GiB"]:
+                                if abs(fs) < 1024:
+                                    size_str = f"{fs:.1f}{unit}"
+                                    break
+                                fs /= 1024
+                            else:
+                                size_str = f"{fs:.1f}TiB"
+                        else:
+                            size_str = "-"
+                        size_str = size_str[:10]
+
+                        tbr = f.get("tbr")
+                        br_str = f"{tbr:.0f}k" if tbr else "-"
+                        br_str = br_str[:8]
+
+                        line = (
+                            f"{fmt_id:<6} {ext:<6} {res:<12} {fps:<5} "
+                            f"{vcodec:<16} {acodec:<14} {size_str:<10} {br_str:<8}"
+                        )
+                        format_lines.append(line)
+
+                        # Collect containers & codecs for radio buttons
+                        ext_lc = ext.lower()
+                        if ext_lc in CONTAINER_CHOICES:
+                            containers.add(ext_lc)
+                        vc = vcodec.lower()
+                        if vc and vc != "none":
+                            if "avc1" in vc or "h264" in vc:
+                                codecs.add("h264")
+                            elif "h265" in vc or "hev1" in vc or "hevc" in vc:
+                                codecs.add("h265")
+                            elif "vp09" in vc or "vp9" in vc:
+                                codecs.add("vp9")
+                            elif "av01" in vc or "av1" in vc:
+                                codecs.add("av1")
+
+                    avail_containers = sorted(containers & set(CONTAINER_CHOICES))
+                    avail_codecs = sorted(codecs)
+
                     def update_ui() -> None:
-                        details = self.query_one("#preview-details", Static)
-                        area = self.query_one("#preview-area", VerticalScroll)
-                        details.update(preview_text)
-                        area.remove_class("hidden")
-                        status.update("Metadata loaded.")
+                        try:
+                            details = self.query_one("#preview-details", Static)
+                            area = self.query_one("#preview-area", VerticalScroll)
+                            details.update(preview_text)
+                            area.remove_class("hidden")
+                            status.update("Metadata loaded.")
+
+                            formats_area = self.query_one(
+                                "#formats-area", VerticalScroll
+                            )
+                            formats_list = self.query_one("#formats-list", Static)
+                            cont = self.query_one("#container-select", RadioSet)
+                            codec = self.query_one("#codec-select", RadioSet)
+
+                            for btn in cont.query(RadioButton):
+                                btn.disabled = True
+                            for btn in codec.query(RadioButton):
+                                btn.disabled = True
+
+                            _select_key(cont, "c", "mp4")
+                            for c in avail_containers:
+                                btn = _find_btn(cont, f"c-{c}")
+                                if btn:
+                                    btn.disabled = False
+                                    _select_key(cont, "c", c)
+
+                            for cbtn in codec.query(RadioButton):
+                                cbtn.disabled = True
+                            default_btn = _find_btn(codec, "codec-default")
+                            if default_btn:
+                                default_btn.disabled = False
+                            none_btn = _find_btn(codec, "codec-none")
+                            if none_btn:
+                                none_btn.disabled = False
+                            for c in avail_codecs:
+                                btn = _find_btn(codec, f"codec-{c}")
+                                if btn:
+                                    btn.disabled = False
+
+                            # Prefer user's configured codec if available,
+                            # otherwise fall back to default
+                            preferred = self.config.format.codec
+                            if preferred in avail_codecs or preferred in (
+                                "default",
+                                "none",
+                            ):
+                                _select_key(codec, "codec", preferred)
+                            else:
+                                _select_key(codec, "codec", "default")
+
+                            formats_list.update("\n".join(format_lines))
+                            formats_area.remove_class("hidden")
+                        except Exception:
+                            pass
 
                     self.app.call_from_thread(update_ui)
                 else:
@@ -266,10 +404,17 @@ class MainScreen(Screen):
 
         from .config import DownloadTask
 
+        container = (
+            _selected_key(self.query_one("#container-select", RadioSet), "c") or ""
+        )
+        codec = _selected_key(self.query_one("#codec-select", RadioSet), "codec") or ""
+
         task = DownloadTask(
             url=url,
             download_sections=self.query_one("#sections-input", Input).value.strip(),
             split_chapters=self.query_one("#split-chapters-main", Switch).value,
+            container=container,
+            codec=codec,
         )
         # If we have preview data, use it
         details = self.query_one("#preview-details", Static)
@@ -932,7 +1077,8 @@ class ConfigScreen(Screen):
             or "best"
         )
         self.config.format.codec = (
-            _selected_key(self.query_one("#codec-select", RadioSet), "codec") or "h264"
+            _selected_key(self.query_one("#codec-select", RadioSet), "codec")
+            or "default"
         )
         self.config.download.output_dir = self.query_one("#output-dir", Input).value
         self.config.download.output_template = self.query_one(
@@ -999,9 +1145,10 @@ class YtDlpTUI(App):
     Screen { layout: horizontal; }
     #sidebar { width: 25; border: solid $primary; padding: 1; }
     #main-content { padding: 1; }
-    #url-row { height: 3; margin-bottom: 1; }
+    #url-row { height: auto; margin-bottom: 1; }
     #url-input { width: 1fr; }
     #btn-fetch { width: 15; margin-left: 1; }
+    #btn-start { width: 18; margin-left: 1; }
     #preview-area {
         height: auto;
         max-height: 12;
@@ -1020,6 +1167,18 @@ class YtDlpTUI(App):
     .options-row { height: 3; margin-bottom: 1; }
     .options-row Label { width: 1fr; }
     .options-row Input { width: 2fr; }
+    .format-row { height: 10; margin-bottom: 1; layout: horizontal; }
+    .format-row RadioSet { margin-right: 2; }
+    #container-col, #codec-col { width: 1fr; }
+    #formats-area {
+        height: auto;
+        max-height: 35;
+        border: solid $secondary;
+        padding: 1;
+        margin-bottom: 1;
+        background: $surface;
+    }
+    #formats-list { height: auto; }
     RadioSet { margin-bottom: 1; }
     Input { margin-bottom: 1; }
     #status-line { margin-top: 1; }
