@@ -62,6 +62,9 @@ class DownloadTask:
     split_chapters: bool = False
     container: str = ""  # per-task override (empty = use global)
     codec: str = ""
+    duration: int = 0
+    phase: str = "downloading"  # downloading, merging, converting
+    progress_pct: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -1,4 +1,5 @@
 import json
+import re
 import shlex
 import subprocess
 import threading
@@ -17,6 +18,7 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    ProgressBar,
     RadioButton,
     RadioSet,
     Static,
@@ -84,6 +86,7 @@ class MainScreen(Screen):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
+        self._last_preview_duration = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -256,6 +259,9 @@ class MainScreen(Screen):
                         f"Uploader: {uploader}\n"
                         f"Duration: {dur_str} | Views: {view_str} | Date: {date_str}"
                     )
+                    self.app.call_from_thread(
+                        setattr, self, "_last_preview_duration", duration_sec
+                    )
 
                     # Build format list from JSON
                     formats = data.get("formats", [])
@@ -415,6 +421,7 @@ class MainScreen(Screen):
             split_chapters=self.query_one("#split-chapters-main", Switch).value,
             container=container,
             codec=codec,
+            duration=self._last_preview_duration,
         )
         # If we have preview data, use it
         details = self.query_one("#preview-details", Static)
@@ -429,9 +436,70 @@ class MainScreen(Screen):
         self.app.add_task(task)
         url_input.value = ""
         self.query_one("#sections-input", Input).value = ""
+        self._last_preview_duration = 0
         # Hide preview area
         self.query_one("#preview-area", VerticalScroll).add_class("hidden")
         self.query_one("#status-line", Static).update(f"Added to queue: {task.url}")
+
+
+# ---------------------------------------------------------------------------
+# Queue item widget
+# ---------------------------------------------------------------------------
+
+
+class QueueItemWidget(Vertical):
+    def __init__(self, task, **kwargs):
+        super().__init__(**kwargs)
+        self.download_task = task
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._title_text(), id=f"title-{self.download_task.id}")
+        yield ProgressBar(
+            total=100,
+            show_eta=False,
+            show_percentage=True,
+            id=f"progress-{self.download_task.id}",
+        )
+        yield Static(self._detail_text(), id=f"detail-{self.download_task.id}")
+
+    def _title_text(self) -> str:
+        t = self.download_task
+        title = t.title or t.url
+        if t.status == "downloading":
+            color = "yellow"
+        elif t.status == "finished":
+            color = "green"
+        elif t.status == "failed":
+            color = "red"
+        else:
+            color = "white"
+        return f"[{color}]{t.status.upper()}[/{color}] {title}"
+
+    def _detail_text(self) -> str:
+        t = self.download_task
+        if t.phase == "merging":
+            return "Merging audio + video..."
+        elif t.phase == "converting":
+            return f"Converting codec... {t.progress_pct:.1f}%"
+        else:
+            return f"Speed: {t.speed} | ETA: {t.eta}"
+
+    def refresh_display(self) -> None:
+        try:
+            t = self.download_task
+            title = self.query_one(f"#title-{t.id}", Static)
+            progress = self.query_one(f"#progress-{t.id}", ProgressBar)
+            detail = self.query_one(f"#detail-{t.id}", Static)
+
+            title.update(self._title_text())
+            detail.update(self._detail_text())
+
+            if t.phase == "merging":
+                progress.update(total=None)
+            else:
+                progress.update(total=100, progress=t.progress_pct)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +516,7 @@ class QueueScreen(Screen):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
+        self._task_widgets: dict[str, QueueItemWidget] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -471,32 +540,42 @@ class QueueScreen(Screen):
         queue_container = self.query_one("#queue-list", VerticalScroll)
         history_container = self.query_one("#history-list", VerticalScroll)
 
-        # Work on copies to avoid "list changed size during iteration" errors
         queue = list(self.app.download_queue)
         history = list(self.app.history)
 
-        queue_container.remove_children()
+        # Sync queue widgets
+        current_ids = {t.id for t in queue}
+        existing_ids = set(self._task_widgets.keys())
+
+        for tid in existing_ids - current_ids:
+            self._task_widgets[tid].remove()
+            del self._task_widgets[tid]
+
         if not queue:
-            queue_container.mount(Static("No active downloads"))
-        else:
-            for task in queue:
-                title = task.title or task.url
-                status_color = "yellow" if task.status == "downloading" else "white"
-                text = (
-                    f"[{status_color}]{task.status.upper()}[/{status_color}] {title}\n"
+            if not queue_container.children or any(
+                isinstance(c, QueueItemWidget) for c in queue_container.children
+            ):
+                queue_container.remove_children()
+                queue_container.mount(
+                    Static("No active downloads", id="no-downloads-msg")
                 )
-                if task.status == "downloading":
-                    text += (
-                        f"  Progress: {task.progress} | "
-                        f"Speed: {task.speed} | ETA: {task.eta}\n"
-                    )
-                queue_container.mount(Static(text, classes="queue-item"))
+        else:
+            for child in list(queue_container.children):
+                if isinstance(child, Static) and child.id == "no-downloads-msg":
+                    child.remove()
+
+            for task in queue:
+                if task.id not in self._task_widgets:
+                    widget = QueueItemWidget(task)
+                    self._task_widgets[task.id] = widget
+                    queue_container.mount(widget)
+                else:
+                    self._task_widgets[task.id].refresh_display()
 
         history_container.remove_children()
         if not history:
             history_container.mount(Static("No history"))
         else:
-            # Show last 20 history items
             for task in reversed(history[-20:]):
                 title = task.title or task.url
                 status_color = "green" if task.status == "finished" else "red"
@@ -655,6 +734,7 @@ class SearchScreen(Screen):
                             btn = Button("Queue", variant="success", classes="btn-add")
                             btn.url = url
                             btn.title = title
+                            btn.duration = duration
 
                             row = Horizontal(
                                 Static(
@@ -680,7 +760,11 @@ class SearchScreen(Screen):
     def on_add_result(self, event: Button.Pressed) -> None:
         from .config import DownloadTask
 
-        task = DownloadTask(url=event.button.url, title=event.button.title)
+        task = DownloadTask(
+            url=event.button.url,
+            title=event.button.title,
+            duration=getattr(event.button, "duration", 0),
+        )
         self.app.add_task(task)
         event.button.variant = "default"
         event.button.label = "Added"
@@ -715,6 +799,12 @@ class ConvertScreen(Screen):
                     "Start Conversion", id="btn-start-convert", variant="success"
                 )
                 yield Static("", id="convert-status-line")
+                yield ProgressBar(
+                    total=100,
+                    show_eta=False,
+                    show_percentage=True,
+                    id="convert-progress",
+                )
                 yield Static("", id="convert-output-log")
         yield Footer()
 
@@ -741,25 +831,39 @@ class ConvertScreen(Screen):
             self._proc.wait()
         self.app.pop_screen()
 
+    def _get_duration(self, file_path: Path) -> float | None:
+        try:
+            cmd = [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(file_path),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                return float(result.stdout.strip())
+        except Exception:
+            pass
+        return None
+
     @on(Button.Pressed, "#btn-start-convert")
     def on_start_convert(self) -> None:
         if self._proc and self._proc.poll() is None:
             return
 
         file_path_str = self.query_one("#file-input", Input).value.strip()
-        # Remove quotes if dragged and dropped in some terminals
         file_path_str = file_path_str.strip("'\"")
 
-        # Unescape backslashes (common in some terminals when dropping
-        # files with spaces)
         if "\\" in file_path_str:
             try:
-                # Use shlex to handle shell-style escapes (common on Mac)
                 parts = shlex.split(file_path_str)
                 if parts:
                     file_path_str = parts[0]
             except Exception:
-                # Fallback to simple replacement if shlex fails
                 file_path_str = file_path_str.replace("\\ ", " ")
 
         if not file_path_str:
@@ -767,8 +871,10 @@ class ConvertScreen(Screen):
 
         status = self.query_one("#convert-status-line", Static)
         log = self.query_one("#convert-output-log", Static)
-        status.update("Starting conversion...")
+        progress = self.query_one("#convert-progress", ProgressBar)
+        status.update("Analyzing file...")
         log.update("")
+        progress.update(total=None)
 
         downloaded_file = Path(file_path_str)
         self.app.notify_desktop(
@@ -777,7 +883,10 @@ class ConvertScreen(Screen):
 
         if not downloaded_file.exists():
             status.update("File does not exist.")
+            progress.update(total=100, progress=0)
             return
+
+        duration = self._get_duration(downloaded_file)
 
         compatible_file = downloaded_file.with_suffix(".mp4")
         if downloaded_file.suffix == ".mp4":
@@ -806,6 +915,9 @@ class ConvertScreen(Screen):
 
         ffmpeg_cmd.extend(["-c:a", "aac", str(compatible_file)])
 
+        status.update("Starting conversion...")
+        progress.update(total=100, progress=0)
+
         app = self.app
 
         def _stream() -> None:
@@ -830,8 +942,19 @@ class ConvertScreen(Screen):
                     tail = "\n".join(lines[-20:])
                     app.call_from_thread(log.update, tail)
 
+                    time_match = re.search(r"time=(\S+)", line)
+                    if time_match and duration:
+                        current_time = self.app._parse_ffmpeg_time(time_match.group(1))
+                        if current_time is not None and duration > 0:
+                            pct = min(100.0, (current_time / duration) * 100)
+                            app.call_from_thread(progress.update, progress=pct)
+                            app.call_from_thread(
+                                status.update, f"Converting... {pct:.1f}%"
+                            )
+
                 proc.wait()
                 if proc.returncode == 0:
+                    app.call_from_thread(progress.update, progress=100)
                     app.call_from_thread(
                         status.update, f"Done! Saved as {compatible_file.name}"
                     )
@@ -1198,7 +1321,13 @@ class YtDlpTUI(App):
     .btn-add { width: 12; }
 
     #queue-list, #history-list { height: 1fr; }
-    .queue-item { border-bottom: solid $secondary; padding: 1; margin-bottom: 1; }
+    QueueItemWidget {
+        height: auto;
+        border-bottom: solid $secondary;
+        padding: 1;
+        margin-bottom: 1;
+    }
+    QueueItemWidget ProgressBar { margin-top: 1; margin-bottom: 1; }
     .history-item-row {
         height: auto;
         border-bottom: solid $secondary;
@@ -1298,27 +1427,40 @@ class YtDlpTUI(App):
                 if "ERROR:" in line or "error" in line.lower():
                     error_lines.append(line)
 
-                # Try to parse progress:
-                # [download]  10.2% of 15.34MiB at 10.04MiB/s ETA 00:01
-                # [aria2c] 1.2MiB/20MiB(6%) CN:8 DL:2MiB ETA:5s
-                if ("[" in line and "%" in line) or "ETA" in line:
-                    # Extract progress %
-                    # Handles 10.2% or (6%)
+                # Phase detection
+                if "[Merger]" in line or "Merging formats" in line:
+                    task.phase = "merging"
+                    task.progress_pct = 0.0
+                elif "[VideoConvertor]" in line or "Converting video" in line:
+                    task.phase = "converting"
+                    time_match = re.search(r"time=(\S+)", line)
+                    if time_match:
+                        current_sec = self._parse_ffmpeg_time(time_match.group(1))
+                        duration = task.duration or 0
+                        if current_sec is not None and duration > 0:
+                            task.progress_pct = min(
+                                100.0, (current_sec / duration) * 100
+                            )
+                    else:
+                        task.progress_pct = 0.0
+                elif (
+                    ("[download]" in line and "%" in line)
+                    or ("[aria2c]" in line)
+                    or "ETA" in line
+                ):
+                    task.phase = "downloading"
                     prog_match = re.search(r"(\d+\.?\d*)%", line)
                     if prog_match:
                         task.progress = prog_match.group(0)
-
-                    # Extract speed
-                    # Handles 'at 10.04MiB/s' (yt-dlp) or 'DL:2MiB' (aria2c)
+                        task.progress_pct = float(prog_match.group(1))
                     speed_match = re.search(r"(?:at|DL:)\s*([^\s]+)", line)
                     if speed_match:
                         task.speed = speed_match.group(1)
-
-                    # Extract ETA
-                    # Handles 'ETA 00:01' or 'ETA:5s'
                     eta_match = re.search(r"ETA:?\s*([^\s]+)", line)
                     if eta_match:
                         task.eta = eta_match.group(1)
+
+                self.update_task_progress(task)
 
             proc.wait()
             if proc.returncode == 0:
@@ -1352,6 +1494,30 @@ class YtDlpTUI(App):
         from .config import Config
 
         Config.save_history(self.history)
+
+    def update_task_progress(self, task) -> None:
+        """Update any visible QueueItemWidget for this task."""
+        for screen in self.query(QueueScreen):
+            if task.id in screen._task_widgets:
+                try:
+                    screen._task_widgets[task.id].refresh_display()
+                except Exception:
+                    pass
+
+    def _parse_ffmpeg_time(self, time_str: str) -> float | None:
+        """Parse ffmpeg time strings like '00:00:04.00' or '4.00' into seconds."""
+        try:
+            if ":" in time_str:
+                parts = time_str.split(":")
+                if len(parts) == 3:
+                    return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                elif len(parts) == 2:
+                    return int(parts[0]) * 60 + float(parts[1])
+            else:
+                return float(time_str)
+        except (ValueError, TypeError):
+            return None
+        return None
 
 
 def run() -> None:
