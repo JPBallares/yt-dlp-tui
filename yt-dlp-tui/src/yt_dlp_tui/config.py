@@ -187,8 +187,10 @@ class Config:
         # Sections & Splitting
         if download_sections:
             args.extend(["--download-sections", download_sections])
-            # Hide ffmpeg verbosity to not flood log
-            args.extend(["--downloader-args", "ffmpeg_i:-loglevel error"])
+            # Hide ffmpeg verbosity but keep -stats so progress is still reported
+            args.extend(["--downloader-args", "ffmpeg_i:-loglevel error -stats"])
+            # Avoid .part file cleanup bug with section downloads
+            args.append("--no-part")
         if split_chapters:
             args.append("--split-chapters")
             args.extend(["--downloader-args", "ffmpeg_i:-loglevel error"])
@@ -241,8 +243,10 @@ class Config:
         # Output
         output_dir = Path(self.download.output_dir).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
-        outtmpl = str(output_dir / self.download.output_template)
+        output_template = self._effective_output_template(url)
+        outtmpl = str(output_dir / output_template)
         args.extend(["-o", outtmpl])
+        args.extend(["--print", "after_move:__YT_DLP_TUI_FILE__%(filepath)s"])
 
         # Post-processing
         if self.download.embed_thumbnail:
@@ -309,6 +313,24 @@ class Config:
 
         args.append(url)
         return args
+
+    def _effective_output_template(self, url: str) -> str:
+        """Use collision-safe filenames for sites with generic titles."""
+        template = self.download.output_template
+        if not self._is_facebook_url(url) or "%(id" in template:
+            return template
+
+        ext_token = ".%(ext)s"
+        if template.endswith(ext_token):
+            return f"{template[: -len(ext_token)]} [%(id)s]{ext_token}"
+        return f"{template} [%(id)s]"
+
+    def _is_facebook_url(self, url: str) -> bool:
+        url_lc = url.lower()
+        return any(
+            host in url_lc
+            for host in ("facebook.com", "fb.watch", "fb.com", "m.facebook.com")
+        )
 
     def _build_format_string(self, container: str = "", codec: str = "") -> str:
         quality = self.format.quality

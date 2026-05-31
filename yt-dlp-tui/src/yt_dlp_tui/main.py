@@ -1408,6 +1408,9 @@ class YtDlpTUI(App):
         self.notify_desktop("Download Started", f"Processing: {task.title or task.url}")
 
         cmd = self.config.build_cli_args(task.url, task=task)
+        output_marker = "__YT_DLP_TUI_FILE__"
+        completed_files: list[Path] = []
+        already_downloaded_files: list[Path] = []
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -1423,6 +1426,20 @@ class YtDlpTUI(App):
                 line = raw_line.rstrip()
                 if not line:
                     continue
+
+                if line.startswith(output_marker):
+                    output_path = line[len(output_marker) :].strip()
+                    if output_path:
+                        completed_files.append(Path(output_path).expanduser())
+                    continue
+
+                already_match = re.search(
+                    r"\[download\]\s+(.+?)\s+has already been downloaded", line
+                )
+                if already_match:
+                    already_downloaded_files.append(
+                        self._resolve_download_path(already_match.group(1))
+                    )
 
                 if "ERROR:" in line or "error" in line.lower():
                     error_lines.append(line)
@@ -1443,6 +1460,33 @@ class YtDlpTUI(App):
                             )
                     else:
                         task.progress_pct = 0.0
+                elif "time=" in line and "speed=" in line and task.download_sections:
+                    # ffmpeg progress lines for section downloads
+                    task.phase = "downloading"
+                    time_match = re.search(r"time=(\S+)", line)
+                    if time_match:
+                        current_sec = self._parse_ffmpeg_time(time_match.group(1))
+                        section_dur = self._parse_section_duration(
+                            task.download_sections
+                        )
+                        if current_sec is not None and section_dur > 0:
+                            task.progress_pct = min(
+                                99.9, (current_sec / section_dur) * 100
+                            )
+                            task.progress = f"{task.progress_pct:.1f}%"
+                    speed_match = re.search(r"speed=\s*([\d.]+)x", line)
+                    if speed_match:
+                        spd = float(speed_match.group(1))
+                        task.speed = f"{spd:.1f}x"
+                        # Calculate ETA from remaining time / speed
+                        section_dur = self._parse_section_duration(
+                            task.download_sections
+                        )
+                        if time_match and section_dur > 0 and spd > 0:
+                            cur = self._parse_ffmpeg_time(time_match.group(1)) or 0
+                            remaining = (section_dur - cur) / spd
+                            mins, secs = divmod(int(remaining), 60)
+                            task.eta = f"{mins:02d}:{secs:02d}"
                 elif (
                     ("[download]" in line and "%" in line)
                     or ("[aria2c]" in line)
@@ -1463,19 +1507,44 @@ class YtDlpTUI(App):
                 self.update_task_progress(task)
 
             proc.wait()
+            verified_files = [
+                path
+                for path in completed_files + already_downloaded_files
+                if path.exists()
+            ]
+            reported_files = completed_files + already_downloaded_files
+
             if proc.returncode == 0:
-                task.status = "finished"
-                self.notify_desktop(
-                    "Download Finished",
-                    f"Successfully downloaded: {task.title or task.url}",
-                )
+                if (reported_files and len(verified_files) == len(reported_files)) or (
+                    not reported_files and task.progress_pct >= 99.9
+                ):
+                    task.status = "finished"
+                    task.progress = "100%"
+                    task.progress_pct = 100.0
+                    self.notify_desktop(
+                        "Download Finished",
+                        f"Successfully downloaded: {task.title or task.url}",
+                    )
+                else:
+                    task.status = "failed"
+                    if reported_files:
+                        missing = ", ".join(str(path) for path in reported_files)
+                        task.error_msg = (
+                            "yt-dlp finished, but output file missing: " f"{missing}"
+                        )
+                    else:
+                        task.error_msg = (
+                            "yt-dlp finished without reporting an output file. "
+                            "Try again; if this is Facebook, check cookies or URL."
+                        )
+                    self.notify_desktop(
+                        "Download Failed",
+                        f"Error: {task.error_msg} for: {task.title or task.url}",
+                    )
             else:
+                error_text = " ".join(error_lines[-2:]) if error_lines else ""
                 task.status = "failed"
-                task.error_msg = (
-                    " ".join(error_lines[-2:])
-                    if error_lines
-                    else f"Exit code {proc.returncode}"
-                )
+                task.error_msg = error_text or f"Exit code {proc.returncode}"
                 self.notify_desktop(
                     "Download Failed",
                     f"Error: {task.error_msg} for: {task.title or task.url}",
@@ -1494,6 +1563,13 @@ class YtDlpTUI(App):
         from .config import Config
 
         Config.save_history(self.history)
+
+    def _resolve_download_path(self, path_text: str) -> Path:
+        path = Path(path_text.strip().strip("'\"")).expanduser()
+        if not path.is_absolute():
+            output_dir = Path(self.config.download.output_dir).expanduser()
+            path = output_dir / path
+        return path
 
     def update_task_progress(self, task) -> None:
         """Update any visible QueueItemWidget for this task."""
@@ -1518,6 +1594,17 @@ class YtDlpTUI(App):
         except (ValueError, TypeError):
             return None
         return None
+
+    def _parse_section_duration(self, sections_str: str) -> float:
+        """Parse section string and return duration in seconds."""
+        import re as _re
+
+        match = _re.search(r"\*?([\d:.]+)-([\d:.]+)", sections_str)
+        if not match:
+            return 0.0
+        start = self._parse_ffmpeg_time(match.group(1)) or 0.0
+        end = self._parse_ffmpeg_time(match.group(2)) or 0.0
+        return max(0.0, end - start)
 
 
 def run() -> None:
